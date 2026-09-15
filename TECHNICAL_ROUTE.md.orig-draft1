@@ -1,0 +1,227 @@
+# LanPipe — Technical Route
+
+Working name `LanPipe`, replaceable. Status: draft, 2026-09-14.
+
+## 0. Decision snapshot
+
+| Topic | Decision |
+|---|---|
+| v1 scope | Device-to-device file transfer over LAN. Files only. |
+| Platforms | Windows, macOS, Linux, Android, iOS/iPadOS |
+| Form | One C++/Qt codebase → native app on every platform, single binary |
+| UI | Qt Quick (QML). Widgets cannot run on iOS/Android. |
+| Language / framework | C++23, Qt 6.8 LTS |
+| Build | CMake, `qt_add_qml_module` embeds QML into the binary |
+| Discovery | mDNS via mjansson/mdns (`_lanpipe._tcp`) + UDP broadcast fallback |
+| Transfer | HTTPS (TLS, self-signed cert), JSON metadata + raw body stream |
+| Security | Device keypair + fingerprint, PIN pairing, trust list, approval prompt for unknown senders |
+| Out of scope v1 | Folders, text/clipboard, resume, headless server, LocalSend interop |
+
+## 1. Architecture
+
+One codebase, three layers. The core layer compiles without GUI and is testable headless.
+
+```
+┌────────────────────────────────────┐
+│ QML UI (Qt Quick)                  │  device list, send, receive, pairing, settings
+├────────────────────────────────────┤
+│ App controller (C++)               │  wires UI ↔ core, exposes QAbstractListModel
+├────────────────────────────────────┤
+│ Core (C++23, QtNetwork only)       │
+│  ├ Identity    keypair, self-signed cert, fingerprint        │
+│  ├ Discovery   mDNS advertise/browse + UDP broadcast, PeerDirectory │
+│  ├ Trust       paired-peer store, accept policy              │
+│  ├ Transfer    send sessions, receive sessions, progress     │
+│  └ Settings    QSettings (name, save folder, policy)         │
+├────────────────────────────────────┤
+│ Platform shims (small, isolated)   │
+│  Android: MulticastLock JNI, foreground service, scoped storage │
+│  iOS: Bonjour browse via Network.framework, entitlements, plist │
+│  Desktop: firewall hint, installers                            │
+└────────────────────────────────────┘
+```
+
+Rule: no UI code may call sockets; no core code may import QML/Quick.
+
+## 2. Stack
+
+1. **Qt 6.8 LTS**, open source. License is LGPLv3 — dynamic linking is fine; static linking or a closed-source fork needs a commercial Qt license. Confirm you accept this before writing code.
+2. **C++23.** No Boost. Dependencies: Qt Network, Qt Quick, and one header-only C library (mjansson/mdns). Toolchain floors: GCC 13+, Clang 17+, MSVC 2022 17.8+, Xcode 15+, Android NDK r26+.
+3. **UI: QML.** Single touch-first UI serves phone, pad, and desktop.
+4. **HTTP server: `QHttpServer`** (fully supported since Qt 6.8) with SSL enabled. Fallback if it blocks you on streaming: `QTcpServer` + `QSslServer` with a hand-rolled minimal HTTP parser — keep this option open, do not start with it.
+5. **mDNS: mjansson/mdns** (header-only C, public domain, no daemon dependency) on Windows/macOS/Linux/Android. iOS uses the system Bonjour browser through a small Objective-C++ shim — see §7. Qt-only alternative: `qmdnsengine`. Self-implementing mDNS was evaluated and rejected: a both-ends-ours profile would bound it to ~2000–3000 lines and 2–3 weeks (skipping NSEC, IPv6 multicast, sleep proxy), but mjansson reaches the same result in days; revisit only if its event-loop glue proves limiting.
+6. **Toolchain:** CMake ≥ 3.21, Ninja. Android via Qt's CMake toolchain; iOS via CMake → Xcode project.
+
+## 3. Discovery
+
+1. Advertise service type `_lanpipe._tcp.local` on the HTTPS port.
+2. TXT records: `id=<deviceId>`, `fp=<sha256 of cert>`, `name=<device name>`, `ver=<protocol version>`.
+3. Browse → resolve → connect. Store results in `PeerDirectory`, dedup by `deviceId`, refresh with TTL.
+4. Fallback: UDP broadcast on a fixed port (e.g. 53001) every 2 s with the same payload as JSON. Same peer path. This survives some networks where multicast is filtered but broadcast is not.
+5. Last resort: manual IP:port entry in the UI. Cheap to build, saves bad-router situations.
+6. If both mDNS and broadcast fail, the likely cause is client/AP isolation on the router. Detect repeated total failure and show a hint in the UI; nothing can bypass router isolation.
+
+`deviceId` = hash of the device certificate's public key. Two devices never collide, reinstall keeps identity via the stored key.
+
+## 4. Identity and security
+
+### Identity
+
+1. First run: generate a keypair and a self-signed certificate (via the OpenSSL API — Qt links OpenSSL anyway). Private key stored in app-private storage.
+2. Fingerprint = SHA-256 of the certificate. Short form (first 8 bytes) shown in the UI as the human-comparable code.
+
+### Transport
+
+TLS 1.2+ with the self-signed cert. Connections are pinned: the client verifies the server fingerprint it learned from discovery; a mismatch = blocked, with a UI warning.
+
+### Pairing (TOFU + SAS)
+
+1. First transfer attempt to an unknown device → both apps show a 6-digit code derived from the TLS transcript hash (Send-in-Sync style verification).
+2. User confirms the codes match → peer is stored in the trust list with name + fingerprint.
+3. Later transfers from paired devices skip the prompt. Removing a device from the trust list reverts it to "unknown".
+
+This is the same trust model as SSH TOFU plus a short authentication string. Residual risk: a MITM on the very first connection if the user confirms codes without reading them. Document it, do not over-engineer v1.
+
+### Receive policy
+
+| Sender state | Default behavior |
+|---|---|
+| Paired | Auto-accept, notification only |
+| Known, not paired (seen before, user rejected pairing) | Prompt every time |
+| Unknown | Prompt every time |
+| "Open mode" (accept anyone, no prompt) | Off by default, exists in Settings |
+
+Incoming files land in the receive folder with collision-safe names (`photo.jpg` → `photo (1).jpg`). Never overwrite silently.
+
+## 5. Transfer protocol (v1)
+
+Receiver hosts the HTTPS server. Sender connects. All bodies streamed, never buffered whole.
+
+End-to-end sequence (discovery → pairing → upload → complete): `docs/sequence-diagram.puml`, render with `plantuml`.
+
+```
+GET  /api/v1/ping
+     → 200 { "deviceId", "name", "ver", "fp" }
+
+POST /api/v1/prepare          (JSON)
+     { sender: {id, name}, files: [ {id, name, size, mime} ], totalSize }
+     → 200 { sessionId }                    accepted (or auto-accepted)
+     → 403 { reason }                       rejected by user / policy
+     → 504                                  no user response within 30 s
+     Note: prepare may block up to 30 s while the receiver shows the
+     approval prompt. Acceptable for v1; no polling state machine.
+
+PUT  /api/v1/upload/{sessionId}/{fileId}      (raw body, Content-Length)
+     → 200
+     Receiver streams to <save>/<name>.part, renames on last byte,
+     enforces size cap while streaming, aborts session on error (410).
+
+POST /api/v1/complete/{sessionId}
+     → 200. Receiver shows "received N files" notification.
+```
+
+Rules:
+
+1. Sender reads the file in 256 KB chunks into the socket. A 10 GB file must allocate no more than one chunk.
+2. Progress = bytes written / size, computed on both sides from the same counter. No WebSocket progress channel in v1.
+3. Cancel: sender closes the socket or calls complete-with-abort; receiver deletes the `.part` file.
+4. Resume is out of scope v1 but the design reserves `Content-Range` on `PUT` and keeps `.part` files for 24 h — adding it later does not change the schema.
+5. Filenames travel as UTF-8 JSON. The receiver sanitizes them to the local filesystem rules (reserved names, path separators, length).
+6. Multiple files: one `prepare`, sequential `PUT`s per file, one `complete`. Parallel upload is a v2 optimization.
+
+## 6. UI screens (QML)
+
+1. **Send** — peer list (auto-refreshing model, status dot per peer), pick file → pick peer → transfer cards with progress and cancel.
+2. **Receive** — approval prompt (sender name, file count, total size), recent-received list, per-OS "open folder" action.
+3. **Devices** — paired list, unpair, fingerprint shown, manual IP entry.
+4. **Settings** — device name, receive folder, receive policy, open mode toggle.
+
+Core exposes peers and transfers as `QAbstractListModel`s; screens are thin.
+
+## 7. Platform notes
+
+| Platform | Discovery | Storage | Packaging | Hard constraints |
+|---|---|---|---|---|
+| Windows | mjansson/mdns | Free path (Downloads default) | Installer (NSIS/Inno Setup) | First listen triggers Windows Firewall prompt — show a hint before it appears; scope to private networks |
+| macOS | mjansson/mdns | Free path | .app in DMG, hardened runtime + notarization | macOS 15+ shows the Local Network permission prompt — declare `NSLocalNetworkUsageDescription` |
+| Linux | mjansson/mdns | Free path | AppImage (Flatpak later) | No Avahi dependency — our own mDNS stack |
+| Android | mjansson/mdns | App dir default; SAF picker for custom dir | APK / Play (AAB) | Multicast is dropped by default — acquire `WifiManager.MulticastLock` via a small JNI shim at startup. Long transfers need a foreground service (`dataSync`). Scoped storage: no free write to public folders on API 29+; save to app dir or go through MediaStore/SAF |
+| iOS | System Bonjour browse (Network.framework shim) — **do not** use raw multicast sockets | App Documents + Files app (`UIFileSharingEnabled`), Share sheet for Photos | Xcode + TestFlight; needs Apple Developer account ($99/yr) | Transfers run only while the app is foregrounded — document it, revisit with BGTaskScheduler later. Info.plist: `NSLocalNetworkUsageDescription` + `NSBonjourServices` (`_lanpipe._tcp`). Bonjour browse avoids the multicast entitlement; requesting raw-socket multicast entitlement from Apple is slow and avoidable |
+
+The iOS split is deliberate: Apple's multicast entitlement (needed for the raw-socket mDNS library) is slow to obtain; Bonjour browsing through `mDNSResponder` needs no entitlement. One `Discovery` interface, two backends.
+
+## 8. Project layout
+
+```
+lanpipe/
+├─ CMakeLists.txt
+├─ core/                      # QtNetwork-only static library, no GUI
+│  ├ identity.{h,cpp}
+│  ├ discovery/
+│  │  ├ discovery.h           # interface
+│  │  ├ mdnsdiscovery.{h,cpp}
+│  │  ├ broadcastdiscovery.{h,cpp}
+│  │  └ peerdirectory.{h,cpp}
+│  ├ transfer/
+│  │  ├ protocol.h            # endpoint + message definitions
+│  │  ├ sendsession.{h,cpp}
+│  │  └ receiveserver.{h,cpp}
+│  ├ trust/
+│  │  ├ keystore.{h,cpp}
+│  │  └ policy.{h,cpp}
+│  └ settings.{h,cpp}
+├─ app/
+│  ├ main.cpp
+│  └ qml/{Main,Send,Receive,Devices,PairingDialog,Settings}.qml
+├─ cli/                       # headless harness: serve/send/pair — drives M1–M4, doubles as CI tool
+├─ platform/
+│  ├ android/                 # manifest, gradle, JNI shims
+│  └ ios/                     # Info.plist, entitlements, bonjourbridge.{h,mm}
+├─ tests/                     # QtTest: protocol roundtrip, discovery loopback, trust decisions
+└─ docs/
+```
+
+## 9. Milestones
+
+Order rationale: the core is built and proven headless first — QtTest plus a CLI harness instead of GUI churn; QML is a thin client added once the protocol is frozen; mobile ports start only after desktop is end-to-end stable. Sizes: S ≤ 2 days, M ≤ 1 week, L ≥ 2 weeks (solo, rough — expect the mobile ones to surprise).
+
+| # | Milestone | Size | Acceptance |
+|---|---|---|---|
+| M0 | Skeleton: core library layout, CMake (C++23), QtTest, headless CLI harness (`serve` / `send` / `pair` commands), CI (GitHub Actions: Linux + Windows) — no GUI | S | Core builds in CI; `ctest` passes |
+| M1 | Core: identity + TLS + receive server — cert generation, keystore, HTTPS `/ping` | S | `curl -k` hits `/ping` on a running headless instance; fingerprint prints to console |
+| M2 | Core: discovery — mjansson/mdns in the Qt event loop, PeerDirectory, UDP broadcast fallback | M | Two headless instances discover each other; `dns-sd` / `avahi-browse` sees our service; kill mDNS, broadcast still finds peers |
+| M3 | Core: transfer engine — prepare/upload/complete, `.part` + rename, cancel, progress signals | M | Headless desktop→desktop: 1 GB file transfers correctly; cancel leaves no `.part`; 10 GB file stays flat in memory |
+| M4 | Core: pairing + policy — SAS code derivation/verification, trust store, auto-accept rules, collision naming | S | Via CLI harness: unknown sender → confirm prompt + codes; paired sender → silent accept |
+| M5 | QML frontend — Send / Receive / Devices / Pairing / Settings screens on the existing core models; no core changes | M | Full desktop flow via UI: discover, pair, transfer with progress; core untouched |
+| M6 | Android: deployment, MulticastLock, scoped storage, foreground service | L | Android↔desktop transfer of 500 MB works with screen off |
+| M7 | iOS: Xcode build, Bonjour shim, plist + entitlements, storage, TestFlight | L | iPhone↔desktop transfer works in foreground |
+| M8 | 1.0 polish: settings, history, error paths, installers, notarization, signed APK | M | All five platforms installable and transferring |
+
+Total unknown until M4 lands; that point tells you the real protocol cost and recalibrates M6–M8.
+
+## 10. Risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Qt maintenance on Android/iOS | Builds break on toolchain or Qt upgrades | Pin Qt version; CI matrix early (M0); platform shims stay thin and isolated |
+| AP/client isolation on the router | Discovery and transfer both fail | Detect + UI hint; manual IP entry; cannot be bypassed in software |
+| Scoped storage (Android 10+) | Files don't land where users expect | App dir default + SAF picker for custom location; test on API 29, 33, 34 |
+| iOS background limits | Long transfers cut mid-flight | Foreground-only in v1, stated in UI; BGTaskScheduler is a v2 item |
+| Windows Firewall silent block | Receiver unreachable, confusing UX | Pre-prompt hint, link to fix; test on a clean Windows VM |
+| Self-signed TLS friction | Users see scary warnings | Pinning happens in-app, not in a browser; SAS pairing makes it a one-time step |
+| Memory blowup on large files | OOM on phones | Stream in fixed chunks; M3 acceptance explicitly tests 10 GB |
+| Non-ASCII / hostile filenames | Mojibake, path traversal | UTF-8 JSON end to end; receiver-side sanitizer: strip separators, resolve `..`, enforce per-OS reserved names |
+| QHttpServer streaming limits | Can't stream request bodies cleanly | Fall back to `QTcpServer` + `QSslServer` with minimal HTTP parsing; protocol unchanged |
+
+## 11. v2 hooks (designed for, not built)
+
+1. Folder transfer — `prepare` already accepts a file list; add relative paths + a `type` field.
+2. Text/clipboard — one more endpoint, or a zero-length file with a `kind: text` marker.
+3. Resume — `Content-Range` on `PUT`, keep `.part` files (reserved in v1).
+4. LocalSend interop — its protocol is public; optional second protocol handler.
+5. Headless/daemon mode on desktop + tray — core already has no GUI dependency.
+6. Power-aware discovery (mobile). Basis: being discoverable is cheap; active browsing is the cost — on Android it requires holding `WifiManager.MulticastLock`, which disables the Wi-Fi chip's multicast filter and wakes the radio for all LAN multicast (DTIM interval amplifies this). Plan:
+   - Three-state setting: normal (browse + announce), power-saver (announce only — browsing stops with the screen off; cache + pull-to-refresh for one-shot queries), off (manual IP entry only; HTTPS listener unaffected). Desktop defaults to normal, mobile to power-saver.
+   - MulticastLock held only while the app is visible or actively discovering; released when backgrounded and during transfers (peer already known, direct TCP).
+   - Browse interval exponential backoff 1 s → 60 s; PeerDirectory cache hits connect directly and verify with `/ping`.
+   - Measure real drain on devices at M5; if still high, switch Android discovery to system `NsdManager` (system daemon handles multicast, no app-held lock) behind the same `Discovery` interface.

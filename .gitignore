@@ -1,0 +1,20 @@
+# 构建产物
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+
+# CMake / Qt 生成物
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+*.user
+*.user.*
+
+# 平台产物
+.DS_Store
+Thumbs.db
+
+# Claude Code 的本机配置（权限许可清单等），只对当前机器有意义。
+# 项目级的共享配置应放在 .claude/settings.json，那是要提交的。
+.claude/settings.local.json
