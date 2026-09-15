@@ -33,7 +33,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Qt
         uses: jurplel/install-qt-action@v4
@@ -54,7 +54,13 @@ jobs:
           # 系统不自带 OpenSSL，这也是 Qt 在 Apple 平台默认走 SecureTransport 的原因。
           # 用 brew --prefix 而不是硬编码 /opt/homebrew，兼容 Intel 与 Apple Silicon。
           brew install openssl@3
-          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          prefix="$(brew --prefix openssl@3)"
+          echo "OPENSSL_ROOT_DIR=$prefix" >> "$GITHUB_ENV"
+          # 上面那一行只解决编译期（我们的 find_package 和链接）。
+          # Qt 的 openssl 后端插件是在**运行时** dlopen libssl/libcrypto 的，
+          # 而 brew 的 openssl 是 keg-only，不在 dyld 的默认搜索路径上——
+          # 不设这一行，插件加载不到库，supportsSsl() 为假，程序会以退出码 3 拒绝启动。
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
 
       - name: 准备 OpenSSL（Windows）
         if: runner.os == 'Windows'

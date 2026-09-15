@@ -38,6 +38,15 @@ QString forceOpenSslBackend()
         return {}; // 已经是目标后端，幂等返回
 
     const QList<QString> available = QSslSocket::availableBackends();
+
+    // 失败信息统一附带这段上下文。一次失败的 CI 日志就能分辨出是
+    // 「插件没注册」（列表里没有 openssl）还是「注册了但加载不到 OpenSSL 库」
+    // （列表里有，而 supportsSsl 为假）——两者修法完全不同，不该靠再改一次码去问。
+    const QString context =
+        QStringLiteral("可用后端：%1；当前后端：%2")
+            .arg(describeAvailable(available),
+                 current.isEmpty() ? QStringLiteral("(未知)") : current);
+
     if (!available.contains(openSslBackendName())) {
         return QStringLiteral(
                    "TLS 后端 openssl 在此 Qt 构建中不可用。可用后端：%1。\n"
@@ -51,13 +60,17 @@ QString forceOpenSslBackend()
         return QStringLiteral(
                    "TLS 后端切换失败：当前已在使用 %1，无法改为 openssl。\n"
                    "forceOpenSslBackend() 必须早于任何 SSL 对象被创建，"
-                   "请把它放在启动流程的最前面。")
-            .arg(current.isEmpty() ? QStringLiteral("(unknown)") : current);
+                   "请把它放在启动流程的最前面。\n（%2）")
+            .arg(current.isEmpty() ? QStringLiteral("(未知)") : current, context);
     }
 
     // 选定了后端不等于它可用。后端插件存在、但它运行时 dlopen 不到 OpenSSL 库时，
     // setActiveBackend 会成功，而 supportsSsl() 为 false——这是各平台最常见的一类
     // 启动失败，且症状（握手全部失败）与配置错误难以区分，所以在这里就拦下。
+    //
+    // 连同可用后端列表一起报出来，是为了让一次失败的 CI 就能定位：
+    // 列表里有 openssl 说明插件已注册、只是加载不到库；列表里没有则是
+    // 这个 Qt 构建根本没带 openssl 后端插件，那样就只能换 Qt 或改设计。
     if (!QSslSocket::supportsSsl()) {
         return QStringLiteral(
                    "TLS 后端已选定为 openssl，但它无法工作：Qt 的 openssl 插件没能加载"
@@ -65,7 +78,8 @@ QString forceOpenSslBackend()
                    "Linux：安装 libssl3/libcrypto3；Windows：随程序分发 "
                    "libssl-3-x64.dll 与 libcrypto-3-x64.dll；"
                    "Android：把 OpenSSL 库打进 APK（§7）；"
-                   "macOS：系统不自带 OpenSSL，需要一并打包。");
+                   "macOS：系统不自带 OpenSSL，需要一并打包或让 dyld 能找到它。\n（%1）")
+            .arg(context);
     }
 
     return {};
