@@ -35,12 +35,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # 先把 Python 固定下来，再让 Qt action 用它。
+      #
+      # install-qt-action 默认（setup-python: true）会自己跑 actions/setup-python，
+      # 在 Windows runner 上挑到 hostedtoolcache 里最新的 3.14.7。而它内部钉住的
+      # aqtinstall 3.3.x + py7zr 1.1.0 在这套 Python 上跑不起来，表现是 aqtinstall
+      # 以 exit 1 退出、且具体错误只留在日志里（注解只报退出码）。
+      # Linux runner 挑到的 Python 更旧，所以同一个 action 只有 Windows 挂。
+      #
+      # 3.12 是三个 runner 的 hostedtoolcache 里都有的版本。
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: 安装 Qt
         uses: jurplel/install-qt-action@v4
         with:
           # 与 TECHNICAL_ROUTE.md §2.1 一致：跟随 6.11 线，不锁 LTS 分支。
           version: '6.11.2'
           cache: true
+          # 关掉它自己的 Python 选择，改用上面钉住的 3.12。
+          setup-python: false
           # 这里刻意不装 modules：M0 只需要 qtbase（Core / Network / Test）。
           # qtdeclarative（Quick）到 M5 才需要，届时加 modules: qtdeclarative。
 
