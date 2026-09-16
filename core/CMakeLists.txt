@@ -3,12 +3,17 @@
 # 这个目标刻意只链接 Qt6::Core 与 Qt6::Network。Quick 在顶层根本没被 find_package，
 # 所以「core 不许依赖 GUI」（§1.1 规则 2）不是靠约定，而是链接时会直接失败。
 #
-# OpenSSL::Crypto 目前在 M0 还没有使用者，先链上是为了让 CI 在第一天就证明
-# 三个平台都能找到 OpenSSL 3——这是 §2.5 里最可能在后期才暴露的一类环境问题。
-# M1 的证书生成会真正用它。
+# OpenSSL::Crypto 由 identity.cpp 直接使用（密钥生成与自签证书）。
+#
+# Qt6::Network 里的 QSslServer 只在 OpenSSL 后端下才被强制为我们想要的校验行为，
+# 后端的固定发生在运行期（tlsbackend.cpp），链接期无从检查。
 
 add_library(lanpipe_core STATIC
     protocol.h
+    random.h
+    random.cpp
+    sas.h
+    sas.cpp
     http/httprequest.h
     http/httprequest.cpp
     identity.h

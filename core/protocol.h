@@ -110,6 +110,18 @@ inline constexpr auto kSenderHttpTimeout = std::chrono::seconds(45);
 // 只在上传阶段计时——prepare 等待审批期间没有字节流动，用同一个值会误杀审批中的会话。
 inline constexpr auto kStallTimeout = std::chrono::seconds(30);
 
+// —————————————————————— 配对（§4）——————————————————————
+
+// nonce 的字节数（cnonce 与 snonce）。16 字节足够，且让 URL 保持短。
+inline constexpr int kNonceBytes = 16;
+
+// SAS 显示成几位数字。
+inline constexpr int kSasCodeDigits = 6;
+
+// SAS 缓存的寿命。发送方每次 prepare 前都会重新 ping，所以这个值只需覆盖
+// 「ping 到接收方在审批框里显示同一个码」这段时间（§4 规则 3）。
+inline constexpr auto kSasLifetime = std::chrono::minutes(5);
+
 // —————————————————————— 传输参数与本地布局（§5.1、§5.7）——————————————————
 
 // 发送方每次读入 socket 的分块大小。10 GB 文件的额外内存占用不得超过一块。
