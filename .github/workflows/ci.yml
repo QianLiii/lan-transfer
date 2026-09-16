@@ -94,9 +94,29 @@ jobs:
 
       - name: 准备 OpenSSL（Windows）
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          choco install openssl --no-progress -y
-          echo "OPENSSL_ROOT_DIR=C:\Program Files\OpenSSL-Win64" >> "$env:GITHUB_ENV"
+          # runner 镜像已预装 win64-openssl（完整的，含头文件与 .lib），
+          # 路径见 actions/runner-images 的 Install-OpenSSL.ps1：
+          #   $installDir = "$env:ProgramFiles\OpenSSL"
+          # 不需要 choco——而且 choco 的 openssl 包装到 OpenSSL-Win64，
+          # 与镜像自带的这份位置不同，之前就是照着包名猜错了路径。
+          $root = Join-Path $env:ProgramFiles 'OpenSSL'
+          if (-not (Test-Path $root)) {
+            throw "未找到 OpenSSL：$root（runner 镜像变更？）"
+          }
+          Write-Host "OPENSSL_ROOT_DIR=$root"
+          Add-Content -Path $env:GITHUB_ENV -Value "OPENSSL_ROOT_DIR=$root"
+
+      # Windows 上必须先把 MSVC 环境准备好。
+      #
+      # 用 Ninja 生成器时，CMake 从 PATH 上找编译器，而 windows runner 的
+      # C:\mingw64\bin 在 PATH 里，于是会挑到 MinGW 的 g++。但我们装的 Qt 是
+      # win64_msvc2022_64（MSVC ABI），两者不能链接。
+      # 这一步把 cl.exe 放进 PATH，Ninja 就会用到 MSVC。
+      - name: 准备 MSVC 环境（Windows）
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: 配置
         run: cmake --preset ci
