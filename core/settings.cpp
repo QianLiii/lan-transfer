@@ -42,13 +42,21 @@ ReceivePolicy policyFromKey(const QString &key)
     return ReceivePolicy::PromptAlways;
 }
 
+// MSVC 在成员初始化式里对 ?: 的结果要求拷贝构造，而 QSettings 的拷贝构造已删除。
+// 换成单一 return 的工厂函数，靠保证的拷贝消除。
+QSettings makeSettings(const QString &iniPath)
+{
+    if (iniPath.isEmpty()) {
+        return QSettings(QSettings::NativeFormat, QSettings::UserScope,
+                         QLatin1String(kOrgName), QLatin1String(kAppName));
+    }
+    return QSettings(iniPath, QSettings::IniFormat);
+}
+
 } // namespace
 
 Settings::Settings(const QString& iniPath)
-    : m_settings(iniPath.isEmpty()
-                     ? QSettings(QSettings::NativeFormat, QSettings::UserScope,
-                                 QLatin1String(kOrgName), QLatin1String(kAppName))
-                     : QSettings(iniPath, QSettings::IniFormat))
+    : m_settings(makeSettings(iniPath))
 {
 }
 
