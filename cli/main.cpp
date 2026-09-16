@@ -6,13 +6,22 @@
 // 它的第二个身份是 CI 工具：M1–M4 的验收全部靠它驱动，因此必须有
 // 非交互路径（--yes / --pin），否则配对流程需要人工比对 6 位码就无法自动化。
 
+#include "http/httpserver.h"
+#include "identity.h"
 #include "protocol.h"
+#include "sas.h"
+#include "settings.h"
 #include "tlsbackend.h"
+#include "transfer/ping.h"
+#include "transfer/pingclient.h"
 
 #include <QCoreApplication>
 #include <QString>
 #include <QStringList>
 #include <QTextStream>
+#include <QUrl>
+
+#include <optional>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -66,13 +75,13 @@ QString usageText()
         "lanpipe —— 局域网文件传输\n"
         "\n"
         "用法：\n"
-        "  lanpipe serve [--port <n>]              作为接收方监听（M1 起）\n"
+        "  lanpipe serve [--port <n>]              作为接收方监听并应答 /ping\n"
         "  lanpipe send <目标> <文件>...            发送文件（M3 起）\n"
-        "  lanpipe pair <目标>                      配对并写入信任库（M4 起）\n"
+        "  lanpipe pair <host:port> [--pin <fp>]   与目标交换 nonce 并显示 6 位配对码\n"
         "\n"
         "通用选项：\n"
         "  --yes              非交互：自动接受所有审批（仅用于自动化测试）\n"
-        "  --pin <fp>         非交互：预置对端指纹，跳过 SAS 人工比对\n"
+        "  --pin <fp>         非交互：要求对端指纹等于 <fp>，不符即拒绝\n"
         "  --version          打印版本与环境信息\n"
         "  -h, --help         显示本帮助\n");
 }
@@ -138,11 +147,62 @@ void printVersion()
     writeStdout(QStringLiteral("TLS 后端 %1").arg(lanpipe::activeBackendName()));
 }
 
+// 加载本机身份。失败时打印原因并返回空值。
+std::optional<lanpipe::Identity> loadIdentity()
+{
+    auto identity = lanpipe::Identity::loadOrCreate(lanpipe::Identity::defaultDir());
+    if (!identity.has_value()) {
+        writeStderr(identity.error());
+        return std::nullopt;
+    }
+    return *identity;
+}
+
+void printIdentity(const lanpipe::Identity &identity)
+{
+    writeStdout(QStringLiteral("deviceId %1").arg(identity.deviceId()));
+    writeStdout(QStringLiteral("指纹     %1").arg(identity.fingerprint().toHex()));
+}
+
 int runServe(const Options &options)
 {
-    Q_UNUSED(options);
-    writeStderr(QStringLiteral("serve：尚未实现（M1 起：身份 + TLS + 接收服务端）"));
-    return kExitNotImplemented;
+    using namespace lanpipe;
+
+    const auto identity = loadIdentity();
+    if (!identity.has_value())
+        return kExitFailure;
+
+    // 身份、设置、SAS 缓存三者的生命周期必须覆盖整个服务期，因此都放在这里。
+    Settings settings;
+    SasCache sasCache;
+    http::HttpServer server;
+    transfer::PingService ping(*identity, settings, sasCache, &server);
+
+    // 接收方这一侧的码：与发送方屏幕上显示的那一串必须相等（§4 规则 3）。
+    QObject::connect(&ping, &transfer::PingService::codeSettled,
+                     [](const QString &peerDeviceId, const QString &code) {
+                         writeStdout(QStringLiteral("配对码 %1 —— 来自 %2，请与对方屏幕比对")
+                                         .arg(code, peerDeviceId.left(8)));
+                     });
+
+    server.setHandler([&ping](http::HttpConnection &connection) {
+        if (transfer::PingService::handles(connection.head().target)) {
+            ping.handle(connection);
+            return;
+        }
+        connection.respond(http::Response::text(http::Status::NotFound,
+                                                QStringLiteral("未知目标")));
+    });
+
+    const auto port = server.listen(*identity, static_cast<quint16>(options.port));
+    if (!port.has_value()) {
+        writeStderr(port.error());
+        return kExitFailure;
+    }
+
+    printIdentity(*identity);
+    writeStdout(QStringLiteral("正在监听 %1，协议版本 %2").arg(*port).arg(proto::kVersion));
+    return QCoreApplication::exec();
 }
 
 int runSend(const Options &options)
@@ -154,9 +214,64 @@ int runSend(const Options &options)
 
 int runPair(const Options &options)
 {
-    Q_UNUSED(options);
-    writeStderr(QStringLiteral("pair：尚未实现（M4 起：SAS 配对与信任库）"));
-    return kExitNotImplemented;
+    using namespace lanpipe;
+    using lanpipe::transfer::PingClient;
+
+    if (options.args.isEmpty()) {
+        writeStderr(QStringLiteral("错误：pair 需要一个目标，形如 192.168.1.5:41234"));
+        return kExitUsage;
+    }
+
+    // 目标是 host:port。接收方用临时端口（§3.1），所以端口必须由服务发现或手工给出。
+    const QString target = options.args.first();
+    const qsizetype colon = target.lastIndexOf(QLatin1Char(':'));
+    if (colon <= 0 || colon == target.size() - 1) {
+        writeStderr(QStringLiteral("错误：目标应当是 host:port，收到 %1").arg(target));
+        return kExitUsage;
+    }
+    const QString host = target.left(colon);
+    bool portOk = false;
+    const int port = target.mid(colon + 1).toInt(&portOk);
+    if (!portOk || port <= 0 || port > 65535) {
+        writeStderr(QStringLiteral("错误：端口非法：%1").arg(target.mid(colon + 1)));
+        return kExitUsage;
+    }
+
+    std::optional<Fingerprint> expected;
+    if (!options.pin.isEmpty()) {
+        expected = Fingerprint::fromHex(options.pin);
+        if (!expected.has_value()) {
+            writeStderr(QStringLiteral("错误：--pin 需要 64 位十六进制指纹，收到 %1")
+                            .arg(options.pin));
+            return kExitUsage;
+        }
+    }
+
+    const auto identity = loadIdentity();
+    if (!identity.has_value())
+        return kExitFailure;
+
+    PingClient client;
+    QObject::connect(&client, &PingClient::finished,
+                     [](const PingClient::Result &result) {
+                         if (!result.ok) {
+                             writeStderr(result.error);
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
+                         writeStdout(QStringLiteral("设备名   %1").arg(result.info.name));
+                         writeStdout(QStringLiteral("deviceId %1").arg(result.info.deviceId));
+                         writeStdout(QStringLiteral("指纹     %1")
+                                         .arg(result.peerFingerprint.toHex()));
+                         writeStdout(QStringLiteral("配对码   %1 —— 请与对方屏幕比对")
+                                         .arg(result.code));
+                         QCoreApplication::exit(kExitOk);
+                     });
+
+    printIdentity(*identity);
+    writeStdout(QStringLiteral("正在连接 %1:%2").arg(host).arg(port));
+    client.start(QUrl(QStringLiteral("https://%1:%2").arg(host).arg(port)), *identity, expected);
+    return QCoreApplication::exec();
 }
 
 } // namespace
