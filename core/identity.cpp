@@ -75,6 +75,19 @@ EvpKeyPtr keyFromPem(const QByteArray &pem)
     return {PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free};
 }
 
+// 证书剩余有效期少于这个天数就从同一私钥重签。留出窗口是为了避免
+// 「启动时还有效、跑到一半过期」，而不只是为了处理已过期的情况。
+constexpr int kRenewalWindowDays = 30;
+
+// 已过期或临近过期。
+bool certificateNeedsRenewal(const QSslCertificate &certificate)
+{
+    const QDateTime expiry = certificate.expiryDate();
+    if (!expiry.isValid())
+        return true;
+    return expiry <= QDateTime::currentDateTimeUtc().addDays(kRenewalWindowDays);
+}
+
 // 用 OpenSSL 的专用接口校验证书与私钥是否对应，比自行比对 DER 可靠。
 bool certificateMatchesKey(const QSslCertificate &certificate, EVP_PKEY *key)
 {
@@ -295,17 +308,21 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
         identity.m_certificate = QSslCertificate(certFile.readAll(), QSsl::Pem);
         certFile.close();
         if (identity.m_certificate.isNull()) {
-            // 不静默重签：重签会改变设备身份并切断已有配对，
-            // 这必须由用户显式决定（删掉证书文件即可重签）。
+            // 损坏与过期的处理刻意不同：过期重签用的是同一把私钥，指纹不变，
+            // 因而是安全的；损坏则可能意味着文件被替换，必须由用户决定。
             return std::unexpected(
                 QStringLiteral("证书损坏：%1\n"
                                "删除该文件可从同一私钥重新签发，"
                                "设备身份（SPKI 指纹）不变。")
                     .arg(certPath));
         }
-    } else {
-        // 私钥在、证书不在：从同一私钥重签。这正是 SPKI 指纹的价值——
+    }
+
+    if (identity.m_certificate.isNull() || certificateNeedsRenewal(identity.m_certificate)) {
+        // 证书缺失或到期：从同一私钥重签。这正是 SPKI 指纹的价值——
         // 证书可以随便重签，而配对关系不受影响（§4）。
+        const bool renewing = !identity.m_certificate.isNull();
+
         const X509Ptr issued = issueSelfSignedCertificate(key.get());
         if (!issued)
             return std::unexpected(QStringLiteral("签发证书失败：%1").arg(lastOpenSslError()));
@@ -321,6 +338,10 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
         identity.m_certificate = QSslCertificate(certPem, QSsl::Pem);
         if (identity.m_certificate.isNull())
             return std::unexpected(QStringLiteral("新签发的证书无法被 Qt 解析：%1").arg(certPath));
+
+        // 自动重签是静默发生的状态变化，留一行日志便于事后排查。
+        if (renewing)
+            qInfo("lanpipe: 设备证书已到期或临近到期，已从同一私钥重签；设备身份不变。");
     }
 
     // 证书必须与私钥对应。这条检查不是多余的：key.pem 丢失或被删而 cert.pem

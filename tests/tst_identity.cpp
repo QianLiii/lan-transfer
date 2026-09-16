@@ -12,9 +12,72 @@
 #include <QFile>
 #include <QTemporaryDir>
 
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+
+#include <memory>
+
 #include "identity.h"
 
 using namespace lanpipe;
+
+namespace {
+
+QByteArray readFile(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+// 把 dir 里的证书改成一天前过期。用 OpenSSL 改 notAfter 并用同一把私钥重签，
+// 因此改完之后证书与私钥仍然对应——测的是「过期」，不是「不匹配」。
+bool expireCertificate(const QString &dir)
+{
+    const QByteArray certPem = readFile(QDir(dir).filePath(QStringLiteral("cert.pem")));
+    const QByteArray keyPem = readFile(QDir(dir).filePath(QStringLiteral("key.pem")));
+    if (certPem.isEmpty() || keyPem.isEmpty())
+        return false;
+
+    using BioPtr = std::unique_ptr<BIO, decltype(&BIO_free_all)>;
+    using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+    using KeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+
+    BioPtr certBio{BIO_new_mem_buf(certPem.constData(), static_cast<int>(certPem.size())),
+                   &BIO_free_all};
+    BioPtr keyBio{BIO_new_mem_buf(keyPem.constData(), static_cast<int>(keyPem.size())),
+                  &BIO_free_all};
+    if (!certBio || !keyBio)
+        return false;
+
+    X509Ptr certificate{PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), &X509_free};
+    KeyPtr key{PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free};
+    if (!certificate || !key)
+        return false;
+
+    if (X509_gmtime_adj(X509_getm_notAfter(certificate.get()), -24 * 60 * 60) == nullptr)
+        return false;
+    if (X509_sign(certificate.get(), key.get(), EVP_sha256()) == 0)
+        return false;
+
+    BioPtr output{BIO_new(BIO_s_mem()), &BIO_free_all};
+    if (!output || PEM_write_bio_X509(output.get(), certificate.get()) != 1)
+        return false;
+
+    char *data = nullptr;
+    const long length = BIO_get_mem_data(output.get(), &data);
+    if (length <= 0 || data == nullptr)
+        return false;
+
+    QFile file(QDir(dir).filePath(QStringLiteral("cert.pem")));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    return file.write(QByteArray(data, length)) == length;
+}
+
+} // namespace
 
 class TestIdentity : public QObject
 {
@@ -152,6 +215,33 @@ private slots:
 
         const auto result = Identity::loadOrCreate(dirA);
         QVERIFY(!result.has_value());
+    }
+
+    // 过期证书应当自动从**同一把**私钥重签，设备身份不变——用户什么都不用做。
+    // 这正是把指纹定义在 SPKI 而非证书上的收益。
+    void expiredCertificateIsRenewedKeepingIdentity()
+    {
+        const QString dir = dirFor("expired");
+        auto before = Identity::loadOrCreate(dir);
+        if (!before.has_value())
+            QFAIL(qPrintable(before.error()));
+
+        const QByteArray keyBefore = readFile(QDir(dir).filePath(QStringLiteral("key.pem")));
+        QVERIFY(!keyBefore.isEmpty());
+        QVERIFY(expireCertificate(dir));
+
+        auto after = Identity::loadOrCreate(dir);
+        if (!after.has_value())
+            QFAIL(qPrintable(after.error()));
+
+        // 证书换了……
+        QVERIFY(after->certificate().toDer() != before->certificate().toDer());
+        // ……但私钥没换，身份也没变
+        QCOMPARE(readFile(QDir(dir).filePath(QStringLiteral("key.pem"))), keyBefore);
+        QCOMPARE(after->fingerprint().toHex(), before->fingerprint().toHex());
+        QCOMPARE(after->deviceId(), before->deviceId());
+        // 新证书重新有了完整的有效期
+        QVERIFY(after->certificate().expiryDate() > QDateTime::currentDateTimeUtc().addYears(9));
     }
 
     void certificateValidityIsAboutTenYears()
