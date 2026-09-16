@@ -5,9 +5,10 @@
 #
 # 每个测试类一个可执行文件，命名 tst_<模块>，与源文件名一致。
 
-# 辅助函数：注册一个测试目标。
+# 辅助函数：注册一个测试目标。额外的源文件（例如共用的测试助手头文件，
+# AUTOMOC 需要它们在目标里才会被扫描）跟在名字后面传入。
 function(lanpipe_add_test name)
-    add_executable(${name} ${name}.cpp)
+    add_executable(${name} ${name}.cpp ${ARGN})
     target_link_libraries(${name}
         PRIVATE
             lanpipe_core
@@ -26,3 +27,4 @@ lanpipe_add_test(tst_settings)
 lanpipe_add_test(tst_identity)
 lanpipe_add_test(tst_httprequest)
 lanpipe_add_test(tst_sas)
+lanpipe_add_test(tst_httptransport rawclient.h)

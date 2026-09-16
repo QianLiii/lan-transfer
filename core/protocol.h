@@ -151,4 +151,9 @@ inline constexpr std::size_t kMaxHeaderBlockSize  = 16 * 1024;
 // 常量远比线程池模型容易做到这一步：阻塞式服务的线程数就是并发上限。
 inline constexpr std::size_t kMaxConnections = 8;
 
+// TLS 握手的最长时间。连上却不发 ClientHello 的客户端否则能白占一个连接位。
+// Qt 的默认值同样是 5 秒；写在这里是为了让这个上限出现在协议的常量表里，
+// 而不是散落在某个 Qt 默认值中。
+inline constexpr int kHandshakeTimeoutMs = 5000;
+
 } // namespace lanpipe::proto

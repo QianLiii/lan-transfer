@@ -14,8 +14,16 @@ add_library(lanpipe_core STATIC
     random.cpp
     sas.h
     sas.cpp
+    mtls.h
+    mtls.cpp
     http/httprequest.h
     http/httprequest.cpp
+    http/httpresponse.h
+    http/httpresponse.cpp
+    http/httpconnection.h
+    http/httpconnection.cpp
+    http/httpserver.h
+    http/httpserver.cpp
     identity.h
     identity.cpp
     settings.h
