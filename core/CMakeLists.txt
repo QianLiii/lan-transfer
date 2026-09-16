@@ -9,6 +9,8 @@
 
 add_library(lanpipe_core STATIC
     protocol.h
+    http/httprequest.h
+    http/httprequest.cpp
     identity.h
     identity.cpp
     settings.h
