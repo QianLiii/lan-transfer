@@ -9,6 +9,8 @@
 
 add_library(lanpipe_core STATIC
     protocol.h
+    identity.h
+    identity.cpp
     settings.h
     settings.cpp
     tlsbackend.h

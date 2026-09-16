@@ -23,3 +23,4 @@ endfunction()
 
 lanpipe_add_test(tst_protocol)
 lanpipe_add_test(tst_settings)
+lanpipe_add_test(tst_identity)

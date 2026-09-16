@@ -1,0 +1,175 @@
+// 设备身份（§4）。重点在两条不变量：指纹取自 SPKI 而非证书，以及
+// 证书重签不改变设备身份。
+//
+// 注意本文件一律用 `if (!x.has_value()) QFAIL(qPrintable(x.error()));`
+// 而不是 `QVERIFY2(x.has_value(), qPrintable(x.error()))`：后者会**无条件**
+// 求值消息参数，于是在成功路径上也会调用 error()，触发 std::expected 的内部断言。
+
+#include <QtTest>
+
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
+
+#include "identity.h"
+
+using namespace lanpipe;
+
+class TestIdentity : public QObject
+{
+    Q_OBJECT
+
+private:
+    QTemporaryDir m_dir;
+
+    [[nodiscard]] QString dirFor(const char *name) const
+    {
+        return m_dir.filePath(QLatin1String(name));
+    }
+
+private slots:
+    void initTestCase() { QVERIFY(m_dir.isValid()); }
+
+    // 重启后身份必须不变，否则每次启动都会切断已有配对。
+    void identityPersistsAcrossLoads()
+    {
+        const QString dir = dirFor("persist");
+
+        auto first = Identity::loadOrCreate(dir);
+        if (!first.has_value())
+            QFAIL(qPrintable(first.error()));
+
+        auto second = Identity::loadOrCreate(dir);
+        if (!second.has_value())
+            QFAIL(qPrintable(second.error()));
+
+        QCOMPARE(second->fingerprint().toHex(), first->fingerprint().toHex());
+        QCOMPARE(second->certificate().toDer(), first->certificate().toDer());
+    }
+
+    // §4 的核心：指纹 = SPKI 的 SHA-256，不是证书的哈希。
+    // 因此证书可以重签而设备身份不变。
+    void reissuingCertificateKeepsIdentity()
+    {
+        const QString dir = dirFor("reissue");
+
+        auto before = Identity::loadOrCreate(dir);
+        if (!before.has_value())
+            QFAIL(qPrintable(before.error()));
+
+        QVERIFY(QFile::remove(QDir(dir).filePath(QStringLiteral("cert.pem"))));
+
+        auto after = Identity::loadOrCreate(dir);
+        if (!after.has_value())
+            QFAIL(qPrintable(after.error()));
+
+        QVERIFY(after->certificate().toDer() != before->certificate().toDer());
+        QCOMPARE(after->fingerprint().toHex(), before->fingerprint().toHex());
+        QCOMPARE(after->deviceId(), before->deviceId());
+    }
+
+    // 若指纹误用证书哈希，这条会立刻失败——是上一条不变量的直接反证。
+    void fingerprintIsNotTheCertificateHash()
+    {
+        auto identity = Identity::loadOrCreate(dirFor("notcerthash"));
+        if (!identity.has_value())
+            QFAIL(qPrintable(identity.error()));
+
+        const QByteArray certificateHash = QCryptographicHash::hash(
+            identity->certificate().toDer(), QCryptographicHash::Sha256);
+
+        QCOMPARE(identity->fingerprint().bytes().size(), 32);
+        QVERIFY(identity->fingerprint().bytes() != certificateHash);
+    }
+
+    // 本端与对端必须走同一条计算路径，否则 SAS 两端算出的码不同。
+    void fingerprintFromCertificateMatchesIdentity()
+    {
+        auto identity = Identity::loadOrCreate(dirFor("samepath"));
+        if (!identity.has_value())
+            QFAIL(qPrintable(identity.error()));
+
+        const Fingerprint fromCertificate = Fingerprint::fromCertificate(identity->certificate());
+        QCOMPARE(fromCertificate.toHex(), identity->fingerprint().toHex());
+    }
+
+    void deviceIdIsFingerprintPrefix()
+    {
+        auto identity = Identity::loadOrCreate(dirFor("deviceid"));
+        if (!identity.has_value())
+            QFAIL(qPrintable(identity.error()));
+
+        const QString hex = identity->fingerprint().toHex();
+        QCOMPARE(identity->deviceId(), hex.left(kDeviceIdBytes * 2));
+        QCOMPARE(identity->deviceId().size(), kDeviceIdBytes * 2);
+    }
+
+    // 证书损坏时必须报错，而不是悄悄用同一私钥重签——静默重签会让一次误操作
+    // 变成身份变更，而对端看到的只是「设备身份变了」。
+    void corruptCertificateIsReportedNotSilentlyReissued()
+    {
+        const QString dir = dirFor("corrupt");
+        QVERIFY(Identity::loadOrCreate(dir).has_value());
+
+        QFile certificate(QDir(dir).filePath(QStringLiteral("cert.pem")));
+        QVERIFY(certificate.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        certificate.write("not a certificate");
+        certificate.close();
+
+        const auto result = Identity::loadOrCreate(dir);
+        QVERIFY(!result.has_value());
+    }
+
+    void certificateValidityIsAboutTenYears()
+    {
+        auto identity = Identity::loadOrCreate(dirFor("validity"));
+        if (!identity.has_value())
+            QFAIL(qPrintable(identity.error()));
+
+        const QDateTime expiry = identity->certificate().expiryDate();
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+        QVERIFY(expiry > now.addYears(9));
+        QVERIFY(expiry < now.addYears(11));
+    }
+
+    void hexRoundTripsAndRejectsBadInput()
+    {
+        auto identity = Identity::loadOrCreate(dirFor("hex"));
+        if (!identity.has_value())
+            QFAIL(qPrintable(identity.error()));
+
+        const auto parsed = Fingerprint::fromHex(identity->fingerprint().toHex());
+        QVERIFY(parsed.has_value());
+        QCOMPARE(parsed->bytes(), identity->fingerprint().bytes());
+
+        QVERIFY(!Fingerprint::fromHex(QStringLiteral("abcd")).has_value());
+        QVERIFY(!Fingerprint::fromHex(QString()).has_value());
+    }
+
+    void invalidFingerprintHasNoDeviceId()
+    {
+        QCOMPARE(deviceIdFrom(Fingerprint{}), QString());
+    }
+
+#ifndef Q_OS_WIN
+    // 私钥不应对其他用户可读。
+    void privateKeyIsOwnerOnly()
+    {
+        const QString dir = dirFor("perms");
+        QVERIFY(Identity::loadOrCreate(dir).has_value());
+
+        const QFile::Permissions permissions =
+            QFile::permissions(QDir(dir).filePath(QStringLiteral("key.pem")));
+
+        QVERIFY(!(permissions & QFileDevice::ReadGroup));
+        QVERIFY(!(permissions & QFileDevice::ReadOther));
+        QVERIFY(!(permissions & QFileDevice::WriteGroup));
+        QVERIFY(!(permissions & QFileDevice::WriteOther));
+    }
+#endif
+};
+
+QTEST_GUILESS_MAIN(TestIdentity)
+
+#include "tst_identity.moc"
