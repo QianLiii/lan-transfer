@@ -30,6 +30,10 @@ add_library(lanpipe_core STATIC
     settings.cpp
     tlsbackend.h
     tlsbackend.cpp
+    transfer/ping.h
+    transfer/ping.cpp
+    transfer/pingclient.h
+    transfer/pingclient.cpp
     files/filesource.h
     files/filesink.h
 )
