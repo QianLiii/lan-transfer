@@ -30,7 +30,8 @@ end note
 S -> R : TLS handshake\nclient certificate required (mutual TLS)
 note right of S
   Client pins the receiver fp: trust store first, discovery hint second.
-  Server: VerifyPeer, fail closed on a missing or unparseable client cert;
+  Server: VerifyPeer + setMissingCertificateIsFatal (Qt 6 needs both — missingCert
+  is not fatal by default); fail closed on a missing or unparseable client cert;
   recomputes deviceId from the client cert's public key and compares it with
   the claimed sender id. Observed fp ≠ trust store → reject:
   "device identity changed, pair again".
@@ -39,7 +40,7 @@ end note
 S -> R : GET /api/v1/ping?cnonce=<hex>
 R --> S : 200 { deviceId, name, ver, fp, snonce, reachable }
 S -> S : ver check — major mismatch aborts with an explicit message
-S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)\nfp = the certificates actually observed in this handshake
+S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)\nfp = the certificates actually observed in this handshake\ncode = first 8 bytes big-endian mod 10^6, zero-padded
 R -> R : same computation, same inputs
 note over S, R
   Both sides now hold the same 6-digit code, cached per deviceId.

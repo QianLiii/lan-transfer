@@ -315,6 +315,33 @@ TLS 1.2+ with self-signed certificates and **mutual authentication**:
   self-signed certificates.
 - `QSslServer::setSslConfiguration()` must be called before `listen()`.
 
+Qt 6.11 facts verified against the source (each one silently breaks mTLS if missed):
+
+- **`VerifyPeer` alone does not require a client certificate.** `missingCertificateIsFatal()`
+  defaults to `false`, and the OpenSSL backend only adds `SSL_VERIFY_FAIL_IF_NO_PEER_CERT` when
+  that flag is set (`qsslcontext_openssl.cpp`). Without it a certificate-less client produces an
+  ignorable `NoPeerCertificate` error instead of a failed handshake. Set both.
+- **Partial `ignoreSslErrors(list)` continues only if *every* received error is in the list**
+  (`QSslSocketPrivate::verifyErrorsHaveBeenIgnored`, `qsslsocket.cpp`). Pass exactly the
+  tolerated subset; if anything else is in the list, the handshake fails — which is the
+  behaviour we want, so no separate check is needed.
+- **A socket whose SSL errors are not ignored is *paused*, not dropped** (`PauseOnSslErrors`).
+  Forgetting to handle `sslErrors` therefore presents as a hang, not as an error. Every path
+  that can produce errors must reach a decision.
+- **On a `QNetworkAccessManager` client the peer certificate must be read from
+  `QSslError::certificate()`.** At `sslErrors` time `QNetworkReply::sslConfiguration()` still
+  holds the configuration that was set on the request; the socket's configuration is forwarded
+  on a separate queued signal (`qhttpthreaddelegate.cpp` → `qnetworkreplyhttpimpl.cpp`). All of
+  our certificate-bearing error types carry the certificate.
+- **`QSslServer` hands the socket over on `pendingConnectionAvailable`, not `newConnection`.**
+  `QTcpServer` emits `newConnection()` from its accept loop right after `incomingConnection()`
+  returns — before the TLS handshake, when `nextPendingConnection()` is still empty. Listening
+  to `newConnection` loses every request silently: the connection is accepted, the client waits,
+  and nothing is ever read.
+- **The OpenSSL layer aborts a certificate-less client with a fatal alert before any application
+  byte**, which is what makes "reject, do not answer" observable from the far side as a failed
+  connection rather than an HTTP error.
+
 ### Pairing (TOFU + SAS)
 
 The code must be computed **independently at both ends** and compared by the users. A code sent
@@ -333,7 +360,8 @@ over the wire protects nothing: a man in the middle simply relays it.
    has to see the code before deciding whether to answer that response. That is the deadlock this
    design avoids. `prepare` therefore carries no nonce; the receiver displays the cached code in
    its approval prompt, and the sender displays it right after `ping`.
-4. Both UIs display the 6-digit code. The users confirm the match; the peer is written to the
+4. Both UIs display the 6-digit code — the first 8 bytes of the hash read as a big-endian
+   integer, modulo 10⁶, zero-padded. The users confirm the match; the peer is written to the
    trust list with the observed fingerprint and name.
 5. After pairing, the trust store is the authority — subsequent connections are verified by
    fingerprint pinning, not by recomputing the SAS. A fingerprint that disagrees with the trust
