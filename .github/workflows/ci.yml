@@ -56,6 +56,21 @@ jobs:
           cache: true
           # 关掉它自己的 Python 选择，改用上面钉住的 3.12。
           setup-python: false
+          # 从 git 装 aqtinstall，而不是用 PyPI 上的发布版。
+          #
+          # 原因：PyPI 上最新是 2025-06-02 的 3.3.0，而 Qt 自 6.11.0（2026-03-23）
+          # 起改了 Windows 的仓库布局——架构目录从
+          #   <平台>/desktop/qt6_6112/qt6_6112/Updates.xml
+          # 变成
+          #   <平台>/desktop/qt6_6112/qt6_6112_msvc2022_64/Updates.xml
+          # 3.3.0 不认识新布局，于是在 Windows 上拼出一个 404 的路径，
+          # 报 "Failed to locate XML data for Qt version '6.11.2'"。
+          # Linux 的布局没变，所以同一个 action 只有 Windows 挂。
+          #
+          # 修复（aqtinstall #959 / #1000）已并入 master 但尚未发版，
+          # 因此这里直接指向 master。上游若出现回归，把 @master 换成一个
+          # 具体提交 SHA 即可——aqtsource 的值是原样交给 pip 的。
+          aqtsource: 'aqtinstall @ git+https://github.com/miurahr/aqtinstall@master'
           # 这里刻意不装 modules：M0 只需要 qtbase（Core / Network / Test）。
           # qtdeclarative（Quick）到 M5 才需要，届时加 modules: qtdeclarative。
 
