@@ -272,11 +272,28 @@ private slots:
         QCOMPARE(parseRequestHead(build(kGetLine, {"Host\t: y"})).result, HeadParseResult::Invalid);
     }
 
-    void rejectsControlCharactersInHeaderValue()
+    // 头部字段值只接受可见 ASCII 与制表符。控制字符、DEL、以及 RFC 的 obs-text
+    // （0x80-0xFF）全部拒绝——后者是为兼容历史实现而保留的，本协议没有兼容对象。
+    void rejectsBytesOutsideVisibleAsciiInHeaderValue()
     {
-        QByteArray buffer = build(kGetLine, {"X-Bad: a"});
-        buffer.insert(buffer.indexOf("\r\n\r\n"), '\x01');
-        QCOMPARE(parseRequestHead(buffer).result, HeadParseResult::Invalid);
+        const QList<int> rejected{0x00, 0x01, 0x1F, 0x7F, 0x80, 0xC3, 0xE4, 0xFF};
+        for (int byte : rejected) {
+            QByteArray buffer = build(kGetLine, {"X-Raw: a"});
+            buffer.insert(buffer.indexOf("\r\n\r\n"), QByteArray(1, static_cast<char>(byte)));
+
+            QVERIFY2(parseRequestHead(buffer).result == HeadParseResult::Invalid,
+                     qPrintable(QStringLiteral("字节 0x%1 未被拒绝")
+                                    .arg(byte, 2, 16, QLatin1Char('0'))));
+        }
+    }
+
+    // 制表符是这条规则里唯一被允许的非可见字符，别把它一起拒了。
+    void acceptsTabInsideHeaderValue()
+    {
+        const HeadParseOutcome outcome = parseRequestHead(build(kGetLine, {"X-Tab: a\tb"}));
+
+        QCOMPARE(outcome.result, HeadParseResult::Complete);
+        QCOMPARE(outcome.head.header("X-Tab"), QByteArray("a\tb"));
     }
 
     void rejectsMalformedRequestLine()

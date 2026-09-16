@@ -19,10 +19,9 @@ HeadParseOutcome invalid(QString reason)
 // RFC 9110 tchar
 bool isTokenChar(char c)
 {
-    const auto u = static_cast<unsigned char>(c);
-    if ((u >= '0' && u <= '9') || (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z'))
+    if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
         return true;
-    switch (u) {
+    switch (c) {
     case '!': case '#': case '$': case '%': case '&': case '\'': case '*':
     case '+': case '-': case '.': case '^': case '_': case '`': case '|': case '~':
         return true;
@@ -38,8 +37,7 @@ constexpr qsizetype limit(std::size_t value) { return static_cast<qsizetype>(val
 bool isVisibleAscii(const QByteArray &value)
 {
     for (char c : value) {
-        const auto u = static_cast<unsigned char>(c);
-        if (u < 0x21 || u > 0x7E)
+        if (c < 0x21 || c > 0x7E)
             return false;
     }
     return true;
@@ -179,8 +177,8 @@ HeadParseOutcome parseRequestHead(const QByteArray &buffer)
         while (value.endsWith(' ') || value.endsWith('\t'))
             value.chop(1);
         for (char c : value) {
-            if (static_cast<unsigned char>(c) < 0x20 && c != '\t')
-                return invalid(QStringLiteral("头部字段值含控制字符"));
+            if (c != '\t' && (c < 0x20 || c > 0x7E))
+                return invalid(QStringLiteral("头部字段值只接受可见 ASCII 与制表符"));
         }
 
         head.headers.append({name, value});

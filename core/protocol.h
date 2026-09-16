@@ -14,6 +14,7 @@
 //      字符——解析器不做解码，也不接受任何其它形态（§5.15）。
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
