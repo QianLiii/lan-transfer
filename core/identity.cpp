@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QStandardPaths>
 
 #include <openssl/bn.h>
@@ -72,6 +73,39 @@ EvpKeyPtr keyFromPem(const QByteArray &pem)
     if (!bio)
         return {nullptr, &EVP_PKEY_free};
     return {PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr), &EVP_PKEY_free};
+}
+
+// 用 OpenSSL 的专用接口校验证书与私钥是否对应，比自行比对 DER 可靠。
+bool certificateMatchesKey(const QSslCertificate &certificate, EVP_PKEY *key)
+{
+    const QByteArray der = certificate.toDer();
+    if (der.isEmpty())
+        return false;
+    const auto *cursor = reinterpret_cast<const unsigned char *>(der.constData());
+    X509Ptr parsed{d2i_X509(nullptr, &cursor, der.size()), &X509_free};
+    if (!parsed)
+        return false;
+    return X509_check_private_key(parsed.get(), key) == 1;
+}
+
+// 原子写入：先写临时文件再改名。中途崩溃不会留下半截文件，
+// 否则下次启动只会看到「无法解析」这类只能靠删文件恢复的状态。
+bool writeFileAtomically(const QString &path, const QByteArray &data, QString *error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        *error = QStringLiteral("无法写入 %1：%2").arg(path, file.errorString());
+        return false;
+    }
+    if (file.write(data) != data.size()) {
+        *error = QStringLiteral("写入 %1 不完整").arg(path);
+        return false;
+    }
+    if (!file.commit()) {
+        *error = QStringLiteral("提交 %1 失败：%2").arg(path, file.errorString());
+        return false;
+    }
+    return true;
 }
 
 // EC P-256。选 EC 而不是 RSA：更小更快，而两端都是我们自己的实现，
@@ -204,6 +238,17 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
     const QString keyPath = directory.filePath(QStringLiteral("key.pem"));
     const QString certPath = directory.filePath(QStringLiteral("cert.pem"));
 
+    // 证书还在、私钥没了：身份已无法恢复，因为证书只是公钥的容器。
+    // 这里必须拦住，否则会生成一把新密钥再配上旧证书——得到一个声称旧指纹、
+    // 实际持有新公钥的设备。这是用户必须显式决定的事。
+    if (QFile::exists(certPath) && !QFile::exists(keyPath)) {
+        return std::unexpected(
+            QStringLiteral("私钥已丢失，但证书仍在：%1\n"
+                           "身份无法从证书恢复。删除证书 %2 可生成全新的设备身份，"
+                           "代价是需要与所有对端重新配对。")
+                .arg(keyPath, certPath));
+    }
+
     // ———— 私钥：有就加载，没有就生成 ————
     QByteArray keyPem;
     QFile keyFile(keyPath);
@@ -222,15 +267,18 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
         if (keyPem.isEmpty())
             return std::unexpected(QStringLiteral("导出私钥失败：%1").arg(lastOpenSslError()));
 
-        if (!keyFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            return std::unexpected(
-                QStringLiteral("无法写入私钥 %1：%2").arg(keyPath, keyFile.errorString()));
-        if (keyFile.write(keyPem) != keyPem.size())
-            return std::unexpected(QStringLiteral("写入私钥不完整：%1").arg(keyPath));
-        keyFile.close();
+        QString writeError;
+        if (!writeFileAtomically(keyPath, keyPem, &writeError))
+            return std::unexpected(writeError);
         // 私钥只留给属主。Windows 上不生效，也不做特殊处理。
-        keyFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        QFile::setPermissions(keyPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     }
+
+    // 解析成 EVP_PKEY：既用于校验证书与私钥是否对应，也用于缺证书时重签。
+    const EvpKeyPtr key = keyFromPem(keyPem);
+    if (!key)
+        return std::unexpected(
+            QStringLiteral("无法从 PEM 解析私钥（文件被替换或损坏？）：%1").arg(keyPath));
 
     Identity identity;
     identity.m_privateKey = QSslKey(keyPem, QSsl::Ec, QSsl::Pem, QSsl::PrivateKey);
@@ -258,11 +306,6 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
     } else {
         // 私钥在、证书不在：从同一私钥重签。这正是 SPKI 指纹的价值——
         // 证书可以随便重签，而配对关系不受影响（§4）。
-        const EvpKeyPtr key = keyFromPem(keyPem);
-        if (!key)
-            return std::unexpected(
-                QStringLiteral("无法从 PEM 解析私钥以签发证书：%1").arg(lastOpenSslError()));
-
         const X509Ptr issued = issueSelfSignedCertificate(key.get());
         if (!issued)
             return std::unexpected(QStringLiteral("签发证书失败：%1").arg(lastOpenSslError()));
@@ -271,16 +314,25 @@ std::expected<Identity, QString> Identity::loadOrCreate(const QString &dir)
         if (certPem.isEmpty())
             return std::unexpected(QStringLiteral("导出证书失败：%1").arg(lastOpenSslError()));
 
-        if (!certFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-            return std::unexpected(
-                QStringLiteral("无法写入证书 %1：%2").arg(certPath, certFile.errorString()));
-        if (certFile.write(certPem) != certPem.size())
-            return std::unexpected(QStringLiteral("写入证书不完整：%1").arg(certPath));
-        certFile.close();
+        QString writeError;
+        if (!writeFileAtomically(certPath, certPem, &writeError))
+            return std::unexpected(writeError);
 
         identity.m_certificate = QSslCertificate(certPem, QSsl::Pem);
         if (identity.m_certificate.isNull())
             return std::unexpected(QStringLiteral("新签发的证书无法被 Qt 解析：%1").arg(certPath));
+    }
+
+    // 证书必须与私钥对应。这条检查不是多余的：key.pem 丢失或被删而 cert.pem
+    // 尚在时，上面的分支会生成新密钥，随后这里会把旧证书配上去——设备对外
+    // 声称的指纹来自旧证书、实际持有的却是新公钥，要到握手时才以难以定位的
+    // 方式失败（备份只恢复了一半就是最常见的成因）。
+    if (!certificateMatchesKey(identity.m_certificate, key.get())) {
+        return std::unexpected(
+            QStringLiteral("证书与私钥不对应：%1 与 %2 不是同一次生成的。\n"
+                           "删除这两者可以重新生成身份（设备指纹会变，需要重新配对），"
+                           "或从备份中恢复到匹配的那一份。")
+                .arg(certPath, keyPath));
     }
 
     identity.m_fingerprint = Fingerprint::fromCertificate(identity.m_certificate);

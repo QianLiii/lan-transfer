@@ -121,6 +121,39 @@ private slots:
         QVERIFY(!result.has_value());
     }
 
+    // 私钥丢失而证书还在：必须报错，而不是生成新密钥再配上旧证书。
+    // 后者会得到一个声称旧指纹、实际持有新公钥的设备。
+    void missingPrivateKeyIsReported()
+    {
+        const QString dir = dirFor("nokey");
+        QVERIFY(Identity::loadOrCreate(dir).has_value());
+
+        QVERIFY(QFile::remove(QDir(dir).filePath(QStringLiteral("key.pem"))));
+
+        const auto result = Identity::loadOrCreate(dir);
+        QVERIFY(!result.has_value());
+        // 不得写入新密钥：那会留下一个永远用不上的文件
+        QVERIFY(!QFile::exists(QDir(dir).filePath(QStringLiteral("key.pem"))));
+    }
+
+    // 两个文件都在但来自不同的生成过程（复制、只恢复了一半的备份）：
+    // 必须拒绝，否则设备声称的身份与实际公钥不符。
+    void mismatchedCertificateAndKeyIsRejected()
+    {
+        const QString dirA = dirFor("pairA");
+        const QString dirB = dirFor("pairB");
+        QVERIFY(Identity::loadOrCreate(dirA).has_value());
+        QVERIFY(Identity::loadOrCreate(dirB).has_value());
+
+        // 把 B 的私钥搬到 A：A 现在是 A 的证书 + B 的私钥
+        QVERIFY(QFile::remove(QDir(dirA).filePath(QStringLiteral("key.pem"))));
+        QVERIFY(QFile::copy(QDir(dirB).filePath(QStringLiteral("key.pem")),
+                            QDir(dirA).filePath(QStringLiteral("key.pem"))));
+
+        const auto result = Identity::loadOrCreate(dirA);
+        QVERIFY(!result.has_value());
+    }
+
     void certificateValidityIsAboutTenYears()
     {
         auto identity = Identity::loadOrCreate(dirFor("validity"));
