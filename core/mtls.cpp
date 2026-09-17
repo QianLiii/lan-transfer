@@ -5,12 +5,12 @@
 
 namespace lanpipe::net {
 
-QSslConfiguration mtlsConfiguration(const Identity &identity)
+QSslConfiguration mtlsConfiguration(const QSslCertificate &certificate, const QSslKey &privateKey)
 {
     QSslConfiguration configuration = QSslConfiguration::defaultConfiguration();
 
-    configuration.setLocalCertificate(identity.certificate());
-    configuration.setPrivateKey(identity.privateKey());
+    configuration.setLocalCertificate(certificate);
+    configuration.setPrivateKey(privateKey);
 
     // §4：TLS 1.2 起。
     configuration.setProtocol(QSsl::TlsV1_2OrLater);
@@ -22,8 +22,16 @@ QSslConfiguration mtlsConfiguration(const Identity &identity)
     return configuration;
 }
 
+QSslConfiguration mtlsConfiguration(const Identity &identity)
+{
+    return mtlsConfiguration(identity.certificate(), identity.privateKey());
+}
+
 bool isPinnedTrustError(const QSslError &error)
 {
+    // 判据：**本协议的信任模型不使用这个概念**的错误放行；**证书内容本身不可信
+    // 或不可解析**的错误拒绝。前者是我们主动放弃的 PKI 判断，后者是在说这把公钥
+    // 有问题——而公钥正是我们唯一使用的东西。
     switch (error.error()) {
     case QSslError::SelfSignedCertificate:
     case QSslError::SelfSignedCertificateInChain:
@@ -33,8 +41,19 @@ bool isPinnedTrustError(const QSslError &error)
     case QSslError::HostNameMismatch:
         // 名字不承载身份（§4），身份只由指纹承载。
         return true;
+    case QSslError::CertificateExpired:
+    case QSslError::CertificateNotYetValid:
+    case QSslError::InvalidNotBeforeField:
+    case QSslError::InvalidNotAfterField:
+        // 有效期同样不承载身份。放行它换来的是：对端时钟偏差或久未运行时仍然
+        // 连得上，而固定检查这道真正的门不受影响——它比对的还是那把公钥。
+        // 反过来，拒绝有效期并不能防住私钥泄露（窃贼用同一把公钥重签一张新日期
+        // 的证书即可，指纹不变），所以这份严格性本来就是空的。
+        return true;
     default:
-        // 过期、用途不符、签名错误、缺证书……一律不放行。
+        // 其余一律不放行：签名验证失败、公钥不可解析、缺证书、黑名单……它们说的
+        // 都是「这把公钥不可信」，正是我们必须拒绝的那一类。未知错误落到这里也是
+        // 拒绝——新增的错误码默认 fail closed。
         return false;
     }
 }

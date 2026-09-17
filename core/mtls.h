@@ -28,6 +28,9 @@ namespace lanpipe::net {
 // 注意 VerifyPeer 单独一项并不足以要求对端出示证书：Qt 6 里
 // missingCertificateIsFatal() 默认为 false，缺证书只会产生一个可被忽略的
 // NoPeerCertificate 错误。两者必须一起设置，缺证书才会成为握手期的硬失败。
+[[nodiscard]] QSslConfiguration mtlsConfiguration(const QSslConfiguration &) = delete;
+[[nodiscard]] QSslConfiguration mtlsConfiguration(const QSslCertificate &certificate,
+                                                  const QSslKey &privateKey);
 [[nodiscard]] QSslConfiguration mtlsConfiguration(const Identity &identity);
 
 // 不依赖链校验的那一类握手错误：自签证书、链不受信任、主机名不匹配。

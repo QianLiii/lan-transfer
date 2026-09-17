@@ -17,9 +17,44 @@
 #include "mtls.h"
 #include "protocol.h"
 #include "rawclient.h"
+#include "testcert.h"
 
 using namespace lanpipe;
 using namespace lanpipe::http;
+
+namespace {
+
+// 造一份「同一把密钥、有效期被改过」的证书材料，连同它应有的 deviceId。
+struct CertificateMaterial
+{
+    QByteArray certificatePem;
+    QByteArray keyPem;
+    QString deviceId;
+};
+
+CertificateMaterial certificateWith(testcert::Validity validity)
+{
+    CertificateMaterial material;
+
+    QTemporaryDir dir;
+    if (!dir.isValid())
+        return material;
+    const QString path = dir.filePath(QStringLiteral("peer"));
+
+    auto identity = Identity::loadOrCreate(path);
+    if (!identity.has_value())
+        return material;
+    material.deviceId = identity->deviceId();
+
+    if (!testcert::setValidity(path, validity))
+        return material;
+
+    material.certificatePem = testcert::readFile(QDir(path).filePath(QStringLiteral("cert.pem")));
+    material.keyPem = testcert::readFile(QDir(path).filePath(QStringLiteral("key.pem")));
+    return material;
+}
+
+} // namespace
 
 class TestHttpTransport : public QObject
 {
@@ -144,6 +179,44 @@ private slots:
         QTRY_VERIFY(client.finished());
         QCOMPARE(client.statusCode(), 200);
         QCOMPARE(client.body(), peer->deviceId().toUtf8());
+    }
+
+    // 有效期不参与身份判定（§4）：固定检查比对的仍是那把公钥，所以一张过期的证书
+    // 只要指纹对得上就应当放行。换来的是对端时钟偏差或久未运行时仍然连得上。
+    //
+    // 注意证书要从 PEM 直接装载：Identity::loadOrCreate 会把过期证书自动重签掉，
+    // 走它拿不到「过期但密钥相同」这个状态。
+    void acceptsClientWithExpiredCertificate()
+    {
+        const auto material = certificateWith(testcert::Validity::Expired);
+        QVERIFY(!material.certificatePem.isEmpty());
+
+        const QSslCertificate certificate(material.certificatePem, QSsl::Pem);
+        QVERIFY(certificate.expiryDate() < QDateTime::currentDateTimeUtc());
+
+        RawClient client(rawclient::withPem(material.certificatePem, material.keyPem), this);
+        client.connectTo(m_port);
+        client.send("GET /whoami HTTP/1.1\r\nHost: x\r\n\r\n");
+
+        QTRY_VERIFY(client.finished());
+        QCOMPARE(client.statusCode(), 200);
+        // 身份仍然出自同一把公钥，服务端判出来的 deviceId 与正常证书时一致。
+        QCOMPARE(client.body(), material.deviceId.toUtf8());
+    }
+
+    // 尚未生效同样不参与判定：换的是有效期的另一头，走的却是同一条规则。
+    void acceptsClientWithNotYetValidCertificate()
+    {
+        const auto material = certificateWith(testcert::Validity::NotYetValid);
+        QVERIFY(!material.certificatePem.isEmpty());
+
+        RawClient client(rawclient::withPem(material.certificatePem, material.keyPem), this);
+        client.connectTo(m_port);
+        client.send("GET /whoami HTTP/1.1\r\nHost: x\r\n\r\n");
+
+        QTRY_VERIFY(client.finished());
+        QCOMPARE(client.statusCode(), 200);
+        QCOMPARE(client.body(), material.deviceId.toUtf8());
     }
 
     // —————————————— 解析器：负向用例全部 400 并断连 ——————————————

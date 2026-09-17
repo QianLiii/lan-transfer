@@ -115,6 +115,16 @@ namespace rawclient {
     return lanpipe::net::mtlsConfiguration(identity);
 }
 
+// 直接从 PEM 构造：测试要拿到一张处于特定状态的证书（例如已过期），而
+// Identity::loadOrCreate 会把过期证书自动重签掉，拿不到那种状态。
+[[nodiscard]] inline QSslConfiguration withPem(const QByteArray &certificatePem,
+                                               const QByteArray &keyPem)
+{
+    return lanpipe::net::mtlsConfiguration(QSslCertificate(certificatePem, QSsl::Pem),
+                                           QSslKey(keyPem, QSsl::Ec, QSsl::Pem,
+                                                   QSsl::PrivateKey));
+}
+
 // 不出示任何证书的配置：用来验证「没有证书的连接一律拒绝」。
 [[nodiscard]] inline QSslConfiguration withoutCertificate()
 {
