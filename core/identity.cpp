@@ -233,7 +233,7 @@ QString deviceIdFrom(const Fingerprint &fingerprint)
 {
     if (!fingerprint.isValid())
         return {};
-    return QString::fromLatin1(fingerprint.bytes().left(kDeviceIdBytes).toHex());
+    return QString::fromLatin1(fingerprint.bytes().left(proto::kDeviceIdBytes).toHex());
 }
 
 QString Identity::defaultDir()

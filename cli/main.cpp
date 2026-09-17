@@ -6,6 +6,8 @@
 // 它的第二个身份是 CI 工具：M1–M4 的验收全部靠它驱动，因此必须有
 // 非交互路径（--yes / --pin），否则配对流程需要人工比对 6 位码就无法自动化。
 
+#include "discovery/broadcastdiscovery.h"
+#include "discovery/peerdirectory.h"
 #include "http/httpserver.h"
 #include "identity.h"
 #include "protocol.h"
@@ -199,6 +201,28 @@ int runServe(const Options &options)
         writeStderr(port.error());
         return kExitFailure;
     }
+
+    // 发现只在服务起来之后启动：广播里通告的必须是实际监听的那个端口（§3.1）。
+    discovery::PeerDirectory directory;
+    discovery::BroadcastDiscovery::Config broadcastConfig;
+    broadcastConfig.self.deviceId = identity->deviceId();
+    broadcastConfig.self.name = settings.deviceName();
+    broadcastConfig.self.fingerprint = identity->fingerprint().toHex();
+    broadcastConfig.self.version = proto::kVersion;
+    broadcastConfig.self.port = *port;
+    discovery::BroadcastDiscovery broadcast(broadcastConfig);
+    directory.addSource(&broadcast);
+    QObject::connect(&directory, &discovery::PeerDirectory::peerAdded,
+                     [](const QString &deviceId) {
+                         writeStdout(QStringLiteral("发现 %1").arg(deviceId.left(8)));
+                     });
+    QObject::connect(&directory, &discovery::PeerDirectory::peerRemoved,
+                     [](const QString &deviceId) {
+                         writeStdout(QStringLiteral("掉线 %1").arg(deviceId.left(8)));
+                     });
+    broadcast.start();
+    if (!broadcast.lastError().isEmpty())
+        writeStderr(QStringLiteral("广播发现不可用：%1").arg(broadcast.lastError()));
 
     printIdentity(*identity);
     writeStdout(QStringLiteral("正在监听 %1，协议版本 %2").arg(*port).arg(proto::kVersion));

@@ -274,7 +274,10 @@ a platform shim.
    other support channel.
 
 7. IPv6: decide and document the policy per backend. An IPv4-only path loses IPv6-only networks
-   and networks where v4 is filtered.
+   and networks where v4 is filtered. **Decided for the broadcast backend: IPv4 only** — broadcast
+   has no IPv6 equivalent (its counterpart is multicast, which DNS-SD already covers). The
+   broadcast payload therefore carries no address family information, and the receiving side takes
+   the family from the datagram's source address.
 
 8. The user-visible device name is the TXT `name`, not the mDNS instance name — system DNS-SD
    renames conflicting instances automatically.

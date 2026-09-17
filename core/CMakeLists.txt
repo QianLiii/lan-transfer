@@ -34,6 +34,11 @@ add_library(lanpipe_core STATIC
     transfer/ping.cpp
     transfer/pingclient.h
     transfer/pingclient.cpp
+    discovery/discovery.h
+    discovery/peerdirectory.h
+    discovery/peerdirectory.cpp
+    discovery/broadcastdiscovery.h
+    discovery/broadcastdiscovery.cpp
     files/filesource.h
     files/filesink.h
 )

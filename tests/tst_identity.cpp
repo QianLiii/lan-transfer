@@ -164,8 +164,8 @@ private slots:
             QFAIL(qPrintable(identity.error()));
 
         const QString hex = identity->fingerprint().toHex();
-        QCOMPARE(identity->deviceId(), hex.left(kDeviceIdBytes * 2));
-        QCOMPARE(identity->deviceId().size(), kDeviceIdBytes * 2);
+        QCOMPARE(identity->deviceId(), hex.left(proto::kDeviceIdBytes * 2));
+        QCOMPARE(identity->deviceId().size(), proto::kDeviceIdBytes * 2);
     }
 
     // 证书损坏时必须报错，而不是悄悄用同一私钥重签——静默重签会让一次误操作

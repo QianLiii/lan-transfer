@@ -68,7 +68,7 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
 
     const QJsonObject object = document.object();
 
-    const auto deviceId = hexField(object, "deviceId", kDeviceIdBytes * 2);
+    const auto deviceId = hexField(object, "deviceId", proto::kDeviceIdBytes * 2);
     if (!deviceId.has_value())
         return std::unexpected(deviceId.error());
 

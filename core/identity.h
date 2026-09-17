@@ -5,6 +5,8 @@
 // 身份由一对密钥决定，与证书分离：指纹是 SubjectPublicKeyInfo 的 SHA-256，
 // 不是证书的哈希。因此证书到期重签不改变设备身份，已有配对也不会断。
 
+#include "protocol.h"
+
 #include <QByteArray>
 #include <QSslCertificate>
 #include <QSslKey>
@@ -39,8 +41,7 @@ private:
 };
 
 // deviceId：指纹的截断形式，用于 TXT 与请求体（§3.2）。
-// 128 位足够区分设备，又不会把 TXT 记录撑大。
-inline constexpr int kDeviceIdBytes = 16;
+// 长度常量在 protocol.h，那里是它被引用的地方（TXT 的 id 字段、/ping 的响应）。
 [[nodiscard]] QString deviceIdFrom(const Fingerprint &fingerprint);
 
 class Identity

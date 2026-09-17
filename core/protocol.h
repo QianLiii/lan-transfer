@@ -52,8 +52,20 @@ inline constexpr std::string_view kTxtKeyVer  = "ver";
 inline constexpr std::uint16_t kBroadcastPort = 53001;
 inline constexpr auto kBroadcastInterval = std::chrono::seconds(2);
 
+// 每次通告在间隔上加的随机抖动。同一网段上的机器若同时启动，不加抖动会
+// 形成周期性的一窝蜂。
+inline constexpr auto kBroadcastJitter = std::chrono::milliseconds(500);
+
+// 多久没再听到一个对端就认为它掉线（§3.3）。广播每 2 秒一次，
+// 这个值容许连丢四次。
+inline constexpr auto kPeerExpiry = std::chrono::seconds(10);
+
 // 端口 0 表示由系统分配临时端口，端口号经 SRV 与广播载荷通告（§3.1）。
 inline constexpr std::uint16_t kEphemeralPort = 0;
+
+// deviceId 的字节数：指纹的截断形式，128 位足够区分设备，又不会把 TXT 记录撑大
+// （§3.2）。十六进制形式是它的两倍字符数。
+inline constexpr int kDeviceIdBytes = 16;
 
 // —————————————————————— 端点路径（§5）——————————————————————
 
