@@ -73,12 +73,12 @@ std::expected<Fingerprint, QString> peerFingerprint(const QSslCertificate &certi
     return fingerprint;
 }
 
-std::expected<QString, QString> peerDeviceId(const QSslCertificate &certificate)
+std::expected<PeerIdentity, QString> peerIdentity(const QSslCertificate &certificate)
 {
     const auto fingerprint = peerFingerprint(certificate);
     if (!fingerprint.has_value())
         return std::unexpected(fingerprint.error());
-    return deviceIdFrom(*fingerprint);
+    return PeerIdentity{*fingerprint, deviceIdFrom(*fingerprint)};
 }
 
 QString describeErrors(const QList<QSslError> &errors)

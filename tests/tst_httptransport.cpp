@@ -45,6 +45,10 @@ private:
             if (target == "/silent") {
                 return; // 故意不回答：用于空闲超时与并发上限
             }
+            if (target == "/whoami") {
+                connection.respond(Response::text(Status::Ok, connection.peer().deviceId));
+                return;
+            }
             if (target.startsWith("/body")) {
                 QObject::connect(&connection, &HttpConnection::bodyComplete, &connection,
                                  [&connection] {
@@ -103,9 +107,9 @@ private slots:
         QTRY_COMPARE(m_server.connectionCount(), qsizetype{0});
     }
 
-    // 服务端从对端证书重算 deviceId，得到的就是对端自己声称的那个值。
+    // 服务端从对端证书重算的身份，得到的就是对端自己声称的那个值。
     // 这是 §4 信任模型的地基：deviceId 由公钥导出，因此可以自己证明自己。
-    void peerDeviceIdMatchesTheCertificateOwner()
+    void peerIdentityMatchesTheCertificateOwner()
     {
         QTemporaryDir peerDir;
         QVERIFY(peerDir.isValid());
@@ -113,13 +117,33 @@ private slots:
         if (!peer.has_value())
             QFAIL(qPrintable(peer.error()));
 
-        const auto recomputed = net::peerDeviceId(peer->certificate());
+        const auto recomputed = net::peerIdentity(peer->certificate());
         if (!recomputed.has_value())
             QFAIL(qPrintable(recomputed.error()));
 
-        QCOMPARE(*recomputed, peer->deviceId());
-        // 换一把证书（同一私钥重签）后仍然一致——指纹取自 SPKI。
-        QVERIFY(*recomputed != m_identity.deviceId());
+        QCOMPARE(recomputed->deviceId, peer->deviceId());
+        QCOMPARE(recomputed->fingerprint.toHex(), peer->fingerprint().toHex());
+        QVERIFY(recomputed->isValid());
+        QVERIFY(recomputed->deviceId != m_identity.deviceId());
+    }
+
+    // 身份判定只发生在连接层，处理器读到的就是那次判定的结果——这条断言的用意是
+    // 让「处理器自己解析证书」或「漏掉判定」这两种写法都不再有存在的理由。
+    void handlerSeesThePeerIdentityResolvedAtTheConnectionLayer()
+    {
+        QTemporaryDir peerDir;
+        QVERIFY(peerDir.isValid());
+        auto peer = Identity::loadOrCreate(peerDir.filePath(QStringLiteral("peer")));
+        if (!peer.has_value())
+            QFAIL(qPrintable(peer.error()));
+
+        RawClient client(rawclient::withCertificate(*peer), this);
+        client.connectTo(m_port);
+        client.send("GET /whoami HTTP/1.1\r\nHost: x\r\n\r\n");
+
+        QTRY_VERIFY(client.finished());
+        QCOMPARE(client.statusCode(), 200);
+        QCOMPARE(client.body(), peer->deviceId().toUtf8());
     }
 
     // —————————————— 解析器：负向用例全部 400 并断连 ——————————————

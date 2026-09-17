@@ -10,9 +10,9 @@
 
 namespace lanpipe::http {
 
-HttpConnection::HttpConnection(QSslSocket *socket, Handler handler,
+HttpConnection::HttpConnection(QSslSocket *socket, net::PeerIdentity peer, Handler handler,
                                std::chrono::milliseconds idleTimeout, QObject *parent)
-    : QObject(parent), m_socket(socket), m_handler(std::move(handler))
+    : QObject(parent), m_socket(socket), m_peer(std::move(peer)), m_handler(std::move(handler))
 {
     // socket 原本是 QSslServer 的子对象；挂到本对象下面，两者的生命周期就一致了。
     m_socket->setParent(this);
@@ -32,11 +32,6 @@ HttpConnection::HttpConnection(QSslSocket *socket, Handler handler,
     });
 
     m_idleTimer->start();
-}
-
-QSslCertificate HttpConnection::peerCertificate() const
-{
-    return m_socket->peerCertificate();
 }
 
 QString HttpConnection::peerDescription() const

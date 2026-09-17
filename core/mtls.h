@@ -49,12 +49,24 @@ namespace lanpipe::net {
 // 取不到时返回空证书，调用方必须当作拒绝。
 [[nodiscard]] QSslCertificate certificateFromErrors(const QList<QSslError> &errors);
 
+// 一条连接的对端身份。
+//
+// 判定只有这一处：握手完成后由连接层解析一次，处理器读它，不再各自去碰证书。
+// 散落的检查漏一处就是一条不设防的路径，而漏掉时不会报错，只会静默地少一道检查。
+struct PeerIdentity
+{
+    Fingerprint fingerprint;
+    QString deviceId; // 由指纹截断而来，见 deviceIdFrom()
+
+    [[nodiscard]] bool isValid() const { return fingerprint.isValid(); }
+};
+
 // 对端证书 → 指纹。空证书或无法解析一律失败：这是 fail closed 的落点，
 // 调用方没有任何「拿不到就跳过」的余地。
 [[nodiscard]] std::expected<Fingerprint, QString> peerFingerprint(const QSslCertificate &certificate);
 
-// 对端证书 → deviceId，用于与请求里声称的 deviceId 比对（§4）。
-[[nodiscard]] std::expected<QString, QString> peerDeviceId(const QSslCertificate &certificate);
+// 对端证书 → 身份。用于与请求里声称的 deviceId 比对（§4），也是信任库的查表键。
+[[nodiscard]] std::expected<PeerIdentity, QString> peerIdentity(const QSslCertificate &certificate);
 
 // 把错误列表拼成一行可读文本，写进日志。
 [[nodiscard]] QString describeErrors(const QList<QSslError> &errors);

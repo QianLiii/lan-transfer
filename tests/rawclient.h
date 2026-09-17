@@ -82,6 +82,13 @@ public:
     [[nodiscard]] QByteArray response() const { return m_response; }
     [[nodiscard]] QString error() const { return m_error; }
 
+    // 响应体：跳过头部与分隔空行。没有完整响应时返回空。
+    [[nodiscard]] QByteArray body() const
+    {
+        const qsizetype split = m_response.indexOf("\r\n\r\n");
+        return split < 0 ? QByteArray() : m_response.mid(split + 4);
+    }
+
     // 响应里第一行状态码；没有响应时返回 0。
     [[nodiscard]] int statusCode() const
     {

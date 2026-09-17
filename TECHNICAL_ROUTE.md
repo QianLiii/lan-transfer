@@ -314,6 +314,11 @@ TLS 1.2+ with self-signed certificates and **mutual authentication**:
   JSON and the whole receive policy (§4, receive policy) is decorative.
 - Fail closed. A missing peer certificate, or a public key that cannot be parsed, is a
   rejection — never a skipped check.
+- **The identity is resolved once, in the connection layer**, right after the handshake and before
+  a single request byte is parsed: a missing certificate or an unparseable public key ends the
+  connection there, and every handler receives the already-resolved identity. Handlers do not
+  parse certificates and do not re-check. A check copied into each handler is a check that will
+  eventually be missing from one of them, and a missing check fails silently.
 - Verification is manual fingerprint comparison. Do not rely on Qt's default CA verification for
   self-signed certificates.
 - `QSslServer::setSslConfiguration()` must be called before `listen()`.

@@ -8,6 +8,7 @@
 
 #include "httprequest.h"
 #include "httpresponse.h"
+#include "mtls.h"
 
 #include <QByteArray>
 #include <QByteArrayView>
@@ -17,7 +18,6 @@
 #include <chrono>
 #include <functional>
 
-class QSslCertificate;
 class QSslSocket;
 class QTimer;
 
@@ -34,15 +34,16 @@ public:
     // 请求头解析完成后调用一次。
     using Handler = std::function<void(HttpConnection &)>;
 
-    // 接管 socket 的所有权（它成为本对象的子对象）。
-    HttpConnection(QSslSocket *socket, Handler handler,
-                   std::chrono::milliseconds idleTimeout,
-                   QObject *parent = nullptr);
+    // 接管 socket 的所有权（它成为本对象的子对象）。peer 由连接层在握手后判定，
+    // 构造即要求它是有效的——无效的连接根本不该被建出来。
+    HttpConnection(QSslSocket *socket, net::PeerIdentity peer, Handler handler,
+                   std::chrono::milliseconds idleTimeout, QObject *parent = nullptr);
 
     [[nodiscard]] const RequestHead &head() const { return m_head; }
 
-    // 对端证书链的叶子。mTLS 保证它非空——空则握手本就不该完成。
-    [[nodiscard]] QSslCertificate peerCertificate() const;
+    // 本次连接的对端身份。处理器只读它，不再自己解析证书——身份判定只有一处。
+    // 是否放行这个身份是另一件事：由各处理器查信任库决定（§4 接收策略）。
+    [[nodiscard]] const net::PeerIdentity &peer() const { return m_peer; }
 
     [[nodiscard]] QString peerDescription() const;
     [[nodiscard]] bool hasResponded() const { return m_responded; }
@@ -81,6 +82,7 @@ private:
     void close();
 
     QSslSocket *m_socket = nullptr;
+    net::PeerIdentity m_peer;
     Handler m_handler;
     QTimer *m_idleTimer = nullptr;
 

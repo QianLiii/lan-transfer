@@ -152,12 +152,9 @@ void PingService::handle(http::HttpConnection &connection)
         return;
     }
 
-    // 对端身份取自这次握手看到的证书，不取任何请求里的声明（§4）。
-    const auto peer = net::peerFingerprint(connection.peerCertificate());
-    if (!peer.has_value()) {
-        connection.respond(http::Response::text(Status::Forbidden, peer.error()));
-        return;
-    }
+    // 对端身份由连接层在握手后判定，取自那次握手看到的证书，不取请求里的任何声明
+    // （§4）。走到这里的连接一定带着有效身份，因此这里没有失败分支。
+    const net::PeerIdentity &peer = connection.peer();
 
     PingInfo info;
     info.deviceId = m_identity.deviceId();
@@ -170,11 +167,10 @@ void PingService::handle(http::HttpConnection &connection)
 
     // 码在这一次交换里定下，并缓存到 deviceId 上：prepare 走的是另一条连接，
     // 那时拿不到新的 snonce（§4 规则 3）。
-    const QString peerDeviceId = deviceIdFrom(*peer);
     const QString code =
-        sasCode(computeSas(*peer, m_identity.fingerprint(), *cnonce, info.snonce));
-    m_sasCache.store(peerDeviceId, {code, *peer, QDateTime::currentDateTimeUtc()});
-    emit codeSettled(peerDeviceId, code);
+        sasCode(computeSas(peer.fingerprint, m_identity.fingerprint(), *cnonce, info.snonce));
+    m_sasCache.store(peer.deviceId, {code, peer.fingerprint, QDateTime::currentDateTimeUtc()});
+    emit codeSettled(peer.deviceId, code);
 
     connection.respond(http::Response::json(Status::Ok, toJson(info)));
 }

@@ -86,7 +86,19 @@ void HttpServer::acceptPending()
             continue;
         }
 
-        auto *connection = new HttpConnection(socket, m_handler, m_idleTimeout, this);
+        // 身份判定就在这里，且只有这里：握手完成后立刻解析对端证书，拿不到身份
+        // 就地断开，不做 HTTP 层回答——这不是请求层面的错误（§4 fail closed）。
+        // 处理器拿到的 HttpConnection 一定带着有效身份，因此没有「忘了检查」的余地。
+        const auto peer = net::peerIdentity(socket->peerCertificate());
+        if (!peer.has_value()) {
+            qWarning("lanpipe: 断开 %s：%s", qPrintable(socket->peerAddress().toString()),
+                     qPrintable(peer.error()));
+            socket->abort();
+            socket->deleteLater();
+            continue;
+        }
+
+        auto *connection = new HttpConnection(socket, *peer, m_handler, m_idleTimeout, this);
         m_connections.append(connection);
         connect(connection, &HttpConnection::finished, this, [this, connection] {
             m_connections.removeOne(connection);
