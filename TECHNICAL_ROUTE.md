@@ -368,9 +368,24 @@ over the wire protects nothing: a man in the middle simply relays it.
    has to see the code before deciding whether to answer that response. That is the deadlock this
    design avoids. `prepare` therefore carries no nonce; the receiver displays the cached code in
    its approval prompt, and the sender displays it right after `ping`.
-4. Both UIs display the 6-digit code — the first 8 bytes of the hash read as a big-endian
-   integer, modulo 10⁶, zero-padded. The users confirm the match; the peer is written to the
+4. **Twelve digits, split into two halves, each end displaying one and requiring the other.**
+   The digits are the first 8 bytes of the hash read as a big-endian integer, modulo 10¹², zero
+   padded. The sender displays the first six and requires the second six as input; the receiver
+   displays the second six and requires the first six. Each end then compares the typed value
+   with **its own** computation and aborts on a mismatch. On success the peer is written to the
    trust list with the observed fingerprint and name.
+
+   Why split rather than both ends displaying the same six digits. The MITM knows all four inputs
+   — it terminates both TLS sessions, so it sees both certificates, both nonces and every byte of
+   the ping — and the two nonces are unbound: `cnonce` is a plain query parameter and `snonce` a
+   JSON field, so the MITM may substitute either. It can therefore **grind**: fix the receiver's
+   side, then search a substituted `snonce` until the sender's code equals the receiver's, about
+   10⁶ hashes, offline, milliseconds. Both screens then show the same six digits and a diligent
+   user is defeated. Splitting makes both halves have to match, which costs 10¹² hashes, and it
+   gives each end an independent machine check — neither has to trust the other's claim that it
+   compared. It also removes the "type the digits off your own screen" shortcut, which would
+   otherwise let a lazy user self-confirm. The residual 10⁻⁶ chance that the two halves are
+   equal is the same magnitude as the code's own strength and is not handled separately.
 5. After pairing, the trust store is the authority — subsequent connections are verified by
    fingerprint pinning, not by recomputing the SAS. A fingerprint that disagrees with the trust
    store is rejected with a "device identity changed, pair again" message.
@@ -382,10 +397,11 @@ requires rebuilding Qt. `QSslConfiguration::sessionTicket()` is the serializatio
 own `SSL_SESSION`, so the two ends hold different bytes and it cannot serve as a shared secret.
 The nonce exchange above gives the same property — a MITM must terminate two separate TLS
 sessions with its own certificate, so the two sides compute different codes — using only public
-API.
+API. Channel binding is the one construction that would make each grinding attempt cost a real
+handshake instead of a hash; revisit it if Qt ever exposes the material.
 
-Residual risk: a MITM on the very first connection if the users confirm without comparing.
-Document it; do not over-engineer v1.
+Residual risk: a MITM on the first connection if a user types the wrong digits **and** the other
+end confirms anyway, or if both halves coincide. Document it; do not over-engineer v1.
 
 ### Receive policy
 
@@ -543,7 +559,8 @@ POST /api/v1/abort/{sessionId}
 
 1. **Send** — peer list (auto-refreshing model, status dot per peer), pick file → pick peer →
    transfer cards with progress and cancel.
-2. **Receive** — approval prompt (sender name, file count, total size, the 6-digit code), recent
+2. **Receive** — approval prompt (sender name, file count, total size, an input for the sender's
+   half of the SAS code — see §4 pairing), recent
    received list, per-OS "open folder" action.
 3. **Devices** — paired list, unpair, block, fingerprint shown, manual IP entry.
 4. **Settings** — device name, receive folder, receive policy, open mode toggle, fixed-port

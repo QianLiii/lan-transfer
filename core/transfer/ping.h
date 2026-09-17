@@ -59,8 +59,9 @@ public:
     void handle(http::HttpConnection &connection);
 
 signals:
-    // 码已在接收方这一侧定下。界面据此显示，与发送方屏幕上的一串比对（§4 规则 3）。
-    void codeSettled(const QString &peerDeviceId, const QString &code);
+    // 码已在接收方这一侧定下。界面据此显示 shown，稍后（prepare 的审批框里）要求
+    // 用户输入 asked——那是发送方屏幕上显示的那一半（§4 规则 3）。
+    void codeSettled(const QString &peerDeviceId, const lanpipe::SasCode &code);
 
 private:
     const Identity &m_identity;

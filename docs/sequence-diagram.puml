@@ -40,11 +40,19 @@ end note
 S -> R : GET /api/v1/ping?cnonce=<hex>
 R --> S : 200 { deviceId, name, ver, fp, snonce, reachable }
 S -> S : ver check — major mismatch aborts with an explicit message
-S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)\nfp = the certificates actually observed in this handshake\ncode = first 8 bytes big-endian mod 10^6, zero-padded
+S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)\nfp = the certificates actually observed in this handshake\n12 digits = first 8 bytes big-endian mod 10^12, zero-padded
 R -> R : same computation, same inputs
 note over S, R
-  Both sides now hold the same 6-digit code, cached per deviceId.
-  Each side displays it only if the peer is not yet in its trust store.
+  Each end displays one half and requires the other half as input:
+
+    sender    displays digits 1-6   requires digits 7-12
+    receiver  displays digits 7-12  requires digits 1-6
+
+  Each end compares what its user typed with its own computation, so neither
+  depends on the other's word, and typing your own screen's half always fails.
+  Two halves must both match, which is what makes the MITM's grind cost 10^12
+  instead of 10^6 — it knows all four inputs and can substitute both nonces.
+
   The code never travels over the wire.
   It is settled HERE, not during prepare: on a later connection the sender
   could not obtain a fresh receiver nonce before its user must decide.
@@ -54,14 +62,19 @@ end note
 == Connection 2 — prepare ==
 
 U -> S : pick file(s) (FileSource), pick receiver
+S -> R : TLS handshake (new connection)
 S -> R : POST /api/v1/prepare\n{ sender{id,name}, files[{id,name,size,mime}], totalSize }
 alt sender paired on the receiver
   R -> R : policy: auto-accept, notification only
   R --> S : 200 { sessionId }
 else unknown sender
-  R -> V : approval prompt: sender name, file count,\ntotal size, SAS code
-  U -> S : pairing dialog shows the same code — users compare
-  V -> R : codes match — accept
+  R -> V : approval prompt: sender name, file count,\ntotal size, and the cached code — asks for the sender's half
+  note over U, V
+    The two users read each other's screen out loud. Each types the other
+    end's half into their own app, which compares it locally and aborts on a
+    mismatch. Nothing about the code crosses the network.
+  end note
+  V -> R : typed digits match the receiver's own computation — accept
   R -> R : trust store += sender (observed fp, name)
   S -> S : trust store += receiver (observed fp, name)
   R --> S : 200 { sessionId }
@@ -81,7 +94,7 @@ end note
 == Connections 3..n — upload (one PUT per TLS connection, sequential) ==
 
 loop per file
-  S -> R : TLS handshake (new connection, client certificate again)
+  S -> R : TLS handshake (new connection)
   S -> R : PUT /api/v1/upload/{sessionId}/{fileId}\nContent-Length = declared size
   loop until Content-Length reached
     S -> R : 256 KB chunk
@@ -102,6 +115,7 @@ end note
 
 == Connection n+1 — complete ==
 
+S -> R : TLS handshake (new connection)
 S -> R : POST /api/v1/complete/{sessionId}
 R -> V : "received N files" notification
 R --> S : 200 { files: [ { id, bytes } ] }
@@ -111,6 +125,7 @@ S -> S : compare per-file byte counts with the declared sizes
 
 alt sender cancels
   U -> S : cancel
+  S -> R : TLS handshake (new connection)
   S -> R : POST /api/v1/abort/{sessionId} — or close the socket
   note over S,R : any in-flight PUT is torn down, no 410 sent
 else receiver cancels
@@ -121,7 +136,9 @@ else peer died or connection stalled
   S -> S : the sender runs the same no-progress timeout
 end
 R -> R : delete session temp dir, mark session gone
-note over R : subsequent PUTs return 410; receiver cleans up temp dirs
-also at startup via a sweep of .lanpipe-tmp entries older than 24 h
+note over R
+  Subsequent PUTs return 410.
+  The receiver also sweeps .lanpipe-tmp entries older than 24 h at startup.
+end note
 
 @enduml

@@ -138,7 +138,9 @@ void PingClient::onFinished(QNetworkReply *reply)
     result.info = *info;
     result.peerFingerprint = m_peerFingerprint;
     // 发送方指纹在前、接收方指纹在后（§4）。两个都取自本次握手。
-    result.code = sasCode(computeSas(m_identity.fingerprint(), m_peerFingerprint, m_cnonce,
+    // 发送方取前半显示、要求输入后半。
+    result.code = sasCode(SasRole::Sender,
+                          computeSas(m_identity.fingerprint(), m_peerFingerprint, m_cnonce,
                                      info->snonce));
     report(result);
 }

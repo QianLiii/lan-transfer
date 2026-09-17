@@ -127,7 +127,8 @@ inline constexpr auto kStallTimeout = std::chrono::seconds(30);
 // nonce 的字节数（cnonce 与 snonce）。16 字节足够，且让 URL 保持短。
 inline constexpr int kNonceBytes = 16;
 
-// SAS 显示成几位数字。
+// SAS 每一半的位数。两端各显示一半、各要求输入另一半，合计 12 位（§4 配对）——
+// 拆成两半是为了让中间人无法只磨出 6 位就能通过。
 inline constexpr int kSasCodeDigits = 6;
 
 // SAS 缓存的寿命。发送方每次 prepare 前都会重新 ping，所以这个值只需覆盖

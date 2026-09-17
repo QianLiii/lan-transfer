@@ -166,9 +166,10 @@ void PingService::handle(http::HttpConnection &connection)
     info.reachable = true;
 
     // 码在这一次交换里定下，并缓存到 deviceId 上：prepare 走的是另一条连接，
-    // 那时拿不到新的 snonce（§4 规则 3）。
-    const QString code =
-        sasCode(computeSas(peer.fingerprint, m_identity.fingerprint(), *cnonce, info.snonce));
+    // 那时拿不到新的 snonce（§4 规则 3）。接收方取后半显示、要求输入前半。
+    const SasCode code = sasCode(SasRole::Receiver,
+                                 computeSas(peer.fingerprint, m_identity.fingerprint(), *cnonce,
+                                            info.snonce));
     m_sasCache.store(peer.deviceId, {code, peer.fingerprint, QDateTime::currentDateTimeUtc()});
     emit codeSettled(peer.deviceId, code);
 

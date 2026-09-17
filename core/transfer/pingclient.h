@@ -34,7 +34,8 @@ public:
         QString error;               // ok 为假时的可读原因
         PingInfo info;               // ok 为真时对端的应答
         Fingerprint peerFingerprint; // 握手时亲眼看到的对端指纹
-        QString code;                // 本端算出的 6 位码，与接收方显示的那一串比对
+        // 本端的两半：显示 shown，要求用户输入对方屏幕上的 asked（§4 配对）。
+        SasCode code;
     };
 
     explicit PingClient(QObject *parent = nullptr);

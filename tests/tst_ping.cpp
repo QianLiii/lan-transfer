@@ -115,17 +115,24 @@ private slots:
         QCOMPARE(result.info.snonce.size(), proto::kNonceBytes * 2);
         QVERIFY(result.info.reachable);
 
-        // 接收方看到的：发送方的 deviceId 与它自己算出的码
+        // 接收方看到的：发送方的 deviceId 与它自己算出的两半
         QCOMPARE(settled.count(), 1);
         QCOMPARE(settled.first().at(0).toString(), sender->deviceId());
-        // 这就是配对界面两边显示的那串数字——必须完全相等。
-        QCOMPARE(settled.first().at(1).toString(), result.code);
-        QCOMPARE(result.code.size(), 6);
+        const SasCode receiverCode = settled.first().at(1).value<SasCode>();
+
+        // 这就是配对时两端各自要做的事：发送方显示的那半，正是接收方要求输入的
+        // 那半，反之亦然（§4 配对）。
+        QCOMPARE(receiverCode.asked, result.code.shown);
+        QCOMPARE(receiverCode.shown, result.code.asked);
+        QVERIFY(result.code.matches(receiverCode.shown));
+        QVERIFY(receiverCode.matches(result.code.shown));
+        QCOMPARE(result.code.shown.size(), 6);
 
         // 码已经落缓存：prepare 走另一条连接，到时从这里读（§4 规则 3）。
         const auto cached = m_sasCache.lookup(sender->deviceId());
         QVERIFY(cached.has_value());
-        QCOMPARE(cached->code, result.code);
+        QCOMPARE(cached->code.shown, receiverCode.shown);
+        QCOMPARE(cached->code.asked, receiverCode.asked);
         QCOMPARE(cached->peerFingerprint.toHex(), sender->fingerprint().toHex());
     }
 
@@ -149,7 +156,8 @@ private slots:
         QVERIFY(!result.ok);
         QVERIFY(result.error.contains(QStringLiteral("指纹")));
         // 没通过比对就不该算出码
-        QVERIFY(result.code.isEmpty());
+        QVERIFY(result.code.shown.isEmpty());
+        QVERIFY(result.code.asked.isEmpty());
     }
 
     // 响应里的 fp 与握手所见不符：对端要么有 bug，要么有人在改包。

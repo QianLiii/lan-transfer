@@ -23,6 +23,7 @@
 #include <QTextStream>
 #include <QUrl>
 
+#include <cstdio>
 #include <optional>
 
 #ifdef Q_OS_WIN
@@ -182,9 +183,9 @@ int runServe(const Options &options)
 
     // 接收方这一侧的码：与发送方屏幕上显示的那一串必须相等（§4 规则 3）。
     QObject::connect(&ping, &transfer::PingService::codeSettled,
-                     [](const QString &peerDeviceId, const QString &code) {
-                         writeStdout(QStringLiteral("配对码 %1 —— 来自 %2，请与对方屏幕比对")
-                                         .arg(code, peerDeviceId.left(8)));
+                     [](const QString &peerDeviceId, const SasCode &code) {
+                         writeStdout(QStringLiteral("本机显示的码 %1（对端 %2）—— 请念给对方输入")
+                                         .arg(code.shown, peerDeviceId.left(8)));
                      });
 
     server.setHandler([&ping](http::HttpConnection &connection) {
@@ -277,7 +278,7 @@ int runPair(const Options &options)
 
     PingClient client;
     QObject::connect(&client, &PingClient::finished,
-                     [](const PingClient::Result &result) {
+                     [&options](const PingClient::Result &result) {
                          if (!result.ok) {
                              writeStderr(result.error);
                              QCoreApplication::exit(kExitFailure);
@@ -287,8 +288,35 @@ int runPair(const Options &options)
                          writeStdout(QStringLiteral("deviceId %1").arg(result.info.deviceId));
                          writeStdout(QStringLiteral("指纹     %1")
                                          .arg(result.peerFingerprint.toHex()));
-                         writeStdout(QStringLiteral("配对码   %1 —— 请与对方屏幕比对")
-                                         .arg(result.code));
+                         writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方")
+                                         .arg(result.code.shown));
+
+                         // 非交互路径：--pin 已经指定了对端指纹，--yes 是测试开关
+                         // （见 usageText 的说明）。两者都不需要人工比对。
+                         if (!options.pin.isEmpty() || options.assumeYes) {
+                             QCoreApplication::exit(kExitOk);
+                             return;
+                         }
+
+                         // 在槽里同步读一行：此刻这条连接已经结束，没有别的事件要处理。
+                         writeStdout(QStringLiteral(
+                             "请输入对方屏幕上显示的 %1 位数字（本机不显示它）：")
+                                         .arg(proto::kSasCodeDigits));
+                         QTextStream in(stdin);
+                         const QString input = in.readLine();
+
+                         if (!result.code.matches(input)) {
+                             writeStderr(QStringLiteral(
+                                 "配对码不一致。\n"
+                                 "  对方屏幕上应当显示的：%1\n"
+                                 "若对方屏幕上显示的确实是这几位，那是输错了；\n"
+                                 "若不是，这条连接的另一端就不是你以为的那台设备，不要继续。")
+                                             .arg(result.code.asked));
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
+
+                         writeStdout(QStringLiteral("配对码一致。"));
                          QCoreApplication::exit(kExitOk);
                      });
 
