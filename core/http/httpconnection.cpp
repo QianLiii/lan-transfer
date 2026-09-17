@@ -32,11 +32,6 @@ HttpConnection::HttpConnection(QSslSocket *socket, Handler handler,
     });
 
     m_idleTimer->start();
-
-    // 握手一完成 QSslServer 就把 socket 交出来，而客户端往往在同一批报文里
-    // 已经把请求发过来了。那时我们还没连上 readyRead，那一次信号已经错过，
-    // 所以这里补一次读取。
-    QMetaObject::invokeMethod(this, &HttpConnection::onReadyRead, Qt::QueuedConnection);
 }
 
 QSslCertificate HttpConnection::peerCertificate() const
@@ -92,7 +87,7 @@ void HttpConnection::respond(const Response &response)
     m_buffer.clear();
 
     m_socket->write(serializeResponse(response));
-    // 让 Qt 先把写缓冲排空再关。直接 close() 会把还没发出去的响应丢掉。
+    // disconnectFromHost() 会等明文写缓冲排空再发 close_notify；close() 直接清空它。
     m_socket->disconnectFromHost();
 }
 
