@@ -39,6 +39,8 @@ add_library(lanpipe_core STATIC
     discovery/peerdirectory.cpp
     discovery/broadcastdiscovery.h
     discovery/broadcastdiscovery.cpp
+    discovery/peerconnector.h
+    discovery/peerconnector.cpp
     trust/truststore.h
     trust/truststore.cpp
     files/filesource.h

@@ -131,7 +131,7 @@ void BroadcastDiscovery::start()
     if (m_socket)
         return; // 幂等
 
-    if (m_config.self.port == 0) {
+    if (m_config.announce && m_config.self.port == 0) {
         // 通告一个端口 0 等于通告「我不知道自己在哪个端口」，对方拿到也没用。
         m_lastError = QStringLiteral("监听端口为 0，没有可通告的内容");
         return;
@@ -177,6 +177,11 @@ void BroadcastDiscovery::sendAdvertisement()
 {
     if (!m_socket)
         return;
+
+    if (!m_config.announce) {
+        // 只收不发：不排下一次，也就不会有下一次。
+        return;
+    }
 
     const QByteArray payload = encodeAdvertisement(m_config.self);
     const QList<QHostAddress> destinations = targets();

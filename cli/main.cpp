@@ -7,6 +7,7 @@
 // 非交互路径（--yes / --pin），否则配对流程需要人工比对 6 位码就无法自动化。
 
 #include "discovery/broadcastdiscovery.h"
+#include "discovery/peerconnector.h"
 #include "discovery/peerdirectory.h"
 #include "http/httpserver.h"
 #include "identity.h"
@@ -84,7 +85,9 @@ QString usageText()
         "用法：\n"
         "  lanpipe serve [--port <n>]              作为接收方监听并应答 /ping\n"
         "  lanpipe send <目标> <文件>...            发送文件（M3 起）\n"
-        "  lanpipe pair <host:port> [--pin <fp>]   与目标交换 nonce 并显示 6 位配对码\n"
+        "  lanpipe pair <目标> [--pin <fp>]        与目标配对：两端各显示 6 位、各输入对方的\n"
+        "                                          目标可以是 deviceId 的十六进制前缀\n"
+        "                                          （先广播发现），或 host:port（手工地址）\n"
         "\n"
         "通用选项：\n"
         "  --yes              非交互：自动接受所有审批（仅用于自动化测试）\n"
@@ -289,28 +292,60 @@ int runSend(const Options &options)
     return kExitNotImplemented;
 }
 
+// pair 的目标：手工给的 host:port（§3.5），或 deviceId 前缀（先发现再连）。
+struct PairTarget
+{
+    bool byDeviceId = false;
+    QString host;
+    quint16 port = 0;
+    QString deviceIdPrefix;
+};
+
+std::optional<PairTarget> parsePairTarget(const QString &text)
+{
+    PairTarget target;
+
+    const qsizetype colon = text.lastIndexOf(QLatin1Char(':'));
+    if (colon > 0 && colon < text.size() - 1) {
+        bool portOk = false;
+        const int port = text.mid(colon + 1).toInt(&portOk);
+        if (portOk && port > 0 && port <= 65535) {
+            target.host = text.left(colon);
+            target.port = static_cast<quint16>(port);
+            return target;
+        }
+        return std::nullopt;
+    }
+
+    // deviceId 的十六进制前缀。允许短前缀是为了少打字；32 位是完整长度。
+    const QString prefix = text.toLower();
+    if (prefix.size() < 4 || prefix.size() > lanpipe::proto::kDeviceIdBytes * 2)
+        return std::nullopt;
+    for (const QChar c : prefix) {
+        if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f')))
+            return std::nullopt;
+    }
+
+    target.byDeviceId = true;
+    target.deviceIdPrefix = prefix;
+    return target;
+}
+
 int runPair(const Options &options)
 {
     using namespace lanpipe;
     using lanpipe::transfer::PingClient;
 
     if (options.args.isEmpty()) {
-        writeStderr(QStringLiteral("错误：pair 需要一个目标，形如 192.168.1.5:41234"));
+        writeStderr(QStringLiteral("错误：pair 需要一个目标：deviceId 前缀或 host:port"));
         return kExitUsage;
     }
 
-    // 目标是 host:port。接收方用临时端口（§3.1），所以端口必须由服务发现或手工给出。
-    const QString target = options.args.first();
-    const qsizetype colon = target.lastIndexOf(QLatin1Char(':'));
-    if (colon <= 0 || colon == target.size() - 1) {
-        writeStderr(QStringLiteral("错误：目标应当是 host:port，收到 %1").arg(target));
-        return kExitUsage;
-    }
-    const QString host = target.left(colon);
-    bool portOk = false;
-    const int port = target.mid(colon + 1).toInt(&portOk);
-    if (!portOk || port <= 0 || port > 65535) {
-        writeStderr(QStringLiteral("错误：端口非法：%1").arg(target.mid(colon + 1)));
+    const auto target = parsePairTarget(options.args.first());
+    if (!target.has_value()) {
+        writeStderr(QStringLiteral("错误：目标应当是 deviceId 的十六进制前缀，"
+                                   "或者 host:port，收到 %1")
+                        .arg(options.args.first()));
         return kExitUsage;
     }
 
@@ -337,23 +372,86 @@ int runPair(const Options &options)
     Settings settings;
     ensureDeviceName(settings);
 
+    // 逐地址尝试用到的状态。runPair 要一直活到 exec() 返回，所以这些都能是局部量。
+    discovery::PeerDirectory directory;
+    discovery::BroadcastDiscovery::Config browseConfig;
+    browseConfig.self.deviceId = identity->deviceId();
+    browseConfig.announce = false; // 只找人不被找：发送方没有在监听
+    discovery::BroadcastDiscovery browse(browseConfig);
+    std::optional<discovery::PeerConnector> connector;
+    bool answered = false; // peerAdopted 是否已经发生过：决定失败后是换地址还是停下
+
     PingClient client(*trust);
+
+    // 换下一个地址再试一次。
+    const auto tryNextAddress = [&] {
+        if (!connector.has_value())
+            return;
+        answered = false;
+        const auto next = connector->startNext();
+        if (!next.has_value()) {
+            writeStderr(QStringLiteral("这台设备的每个地址都试过了：\n  %1")
+                            .arg(connector->failureSummary()));
+            QCoreApplication::exit(kExitFailure);
+            return;
+        }
+        writeStdout(QStringLiteral("尝试 %1:%2").arg(next->address.toString()).arg(next->port));
+        client.start(QUrl(QStringLiteral("https://%1:%2")
+                              .arg(next->address.toString())
+                              .arg(next->port)),
+                     *identity, settings.deviceName(), expected);
+    };
+
+    const auto connectToPeer = [&](const discovery::PeerDirectory::Peer &peer) {
+        if (connector.has_value())
+            return; // 已经在连了
+        writeStdout(QStringLiteral("发现 %1（%2），%3 个地址")
+                        .arg(peer.name, peer.deviceId.left(8))
+                        .arg(peer.addresses.size()));
+        connector.emplace(peer.addresses, proto::kAddressConnectTimeout);
+        QObject::connect(&*connector, &discovery::PeerConnector::attemptTimedOut,
+                         [&tryNextAddress] { tryNextAddress(); });
+        tryNextAddress();
+    };
+
+    QObject::connect(&directory, &discovery::PeerDirectory::peerAdded,
+                     [&](const QString &deviceId) {
+                         if (target->byDeviceId
+                             && deviceId.startsWith(target->deviceIdPrefix)
+                             && directory.peer(deviceId).has_value()) {
+                             connectToPeer(*directory.peer(deviceId));
+                         }
+                     });
+
     // 本端那半在握手完成时就能显示，**早于响应**——接收方那边正等着它的用户
     // 输入这一半，所以它必须先出现在屏幕上。
-    QObject::connect(&client, &PingClient::peerAdopted, [](const SasCode &code) {
+    QObject::connect(&client, &PingClient::peerAdopted, [&](const SasCode &code) {
+        answered = true;
+        if (connector.has_value())
+            connector->connected(); // 握手过了，这个地址的时限撤掉
         writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方").arg(code.shown));
     });
+
     QObject::connect(&client, &PingClient::finished,
-                     [&options, &trust, &identity](const PingClient::Result &result) {
+                     [&](const PingClient::Result &result) {
                          if (!result.ok) {
+                             // 没跟那台设备说上话 → 这个地址不行，换下一个。
+                             // 说上话了却被拒 → 换地址没有意义，那是对方的选择。
+                             if (connector.has_value() && !answered) {
+                                 connector->failed(result.error);
+                                 tryNextAddress();
+                                 return;
+                             }
                              writeStderr(result.error);
                              QCoreApplication::exit(kExitFailure);
                              return;
                          }
+
                          writeStdout(QStringLiteral("设备名   %1").arg(result.info.name));
                          writeStdout(QStringLiteral("deviceId %1").arg(result.info.deviceId));
                          writeStdout(QStringLiteral("指纹     %1")
                                          .arg(result.peerFingerprint.toHex()));
+
                          // 非交互路径：--pin 已经指定了对端指纹，--yes 是测试开关
                          // （见 usageText 的说明）。两者都不需要人工比对。
                          if (!options.pin.isEmpty() || options.assumeYes) {
@@ -396,7 +494,7 @@ int runPair(const Options &options)
                              return;
                          }
 
-                         // 两端各自比对通过之后才写入信任库，写的是握手时观察到的指纹。
+                         // 本端比对通过后写入信任库，写的是握手时观察到的指纹。
                          QString error;
                          if (!trust->add({result.info.deviceId, result.peerFingerprint.toHex(),
                                           result.info.name, QDateTime::currentDateTimeUtc()},
@@ -408,14 +506,51 @@ int runPair(const Options &options)
 
                          writeStdout(QStringLiteral("配对码一致，已配对 %1，已写入信任库。")
                                          .arg(result.info.deviceId.left(8)));
-                         Q_UNUSED(identity);
                          QCoreApplication::exit(kExitOk);
                      });
 
     printIdentity(*identity);
-    writeStdout(QStringLiteral("正在连接 %1:%2").arg(host).arg(port));
-    client.start(QUrl(QStringLiteral("https://%1:%2").arg(host).arg(port)), *identity,
-                 settings.deviceName(), expected);
+
+    if (!target->byDeviceId) {
+        writeStdout(QStringLiteral("正在连接 %1:%2").arg(target->host).arg(target->port));
+        client.start(QUrl(QStringLiteral("https://%1:%2").arg(target->host).arg(target->port)),
+                     *identity, settings.deviceName(), expected);
+        return QCoreApplication::exec();
+    }
+
+    // 先发现再连接。等待上限由本端决定：对方每 2 秒广播一次，10 秒足够覆盖
+    // 几次丢包，又不至于让人干等。
+    constexpr auto kLookupTimeout = std::chrono::seconds(10);
+    writeStdout(QStringLiteral("正在查找 deviceId 以 %1 开头的设备…").arg(target->deviceIdPrefix));
+
+    directory.addSource(&browse);
+    browse.start();
+    if (!browse.lastError().isEmpty())
+        writeStderr(QStringLiteral("广播发现不可用：%1").arg(browse.lastError()));
+
+    // 已经在广播里的对端可能在我们开始听之前就报过到了——不会，但开始听之后
+    // 第一条通告要等下一个周期，所以先扫一遍现有列表。
+    for (const auto &peer : directory.peers()) {
+        if (peer.deviceId.startsWith(target->deviceIdPrefix)) {
+            connectToPeer(peer);
+            break;
+        }
+    }
+
+    auto *deadline = new QTimer(&directory);
+    deadline->setSingleShot(true);
+    QObject::connect(deadline, &QTimer::timeout, [&] {
+        if (connector.has_value())
+            return; // 已经在连了，超时由每个地址的时限负责
+        writeStderr(QStringLiteral(
+            "没有发现 deviceId 以 %1 开头的设备。\n"
+            "  可能是组播/广播被过滤、两台设备不在同一网段，或者对方没有在跑 serve。\n"
+            "  也可以直接给地址：lanpipe pair <host:port>")
+                        .arg(target->deviceIdPrefix));
+        QCoreApplication::exit(kExitFailure);
+    });
+    deadline->start(kLookupTimeout);
+
     return QCoreApplication::exec();
 }
 

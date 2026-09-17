@@ -622,7 +622,8 @@ lanpipe/
 │  │  ├─ dnssddiscovery.{h,cpp}      # system DNS-SD backend
 │  │  ├─ mdnsdiscovery.{h,cpp}       # mjansson fallback
 │  │  ├─ broadcastdiscovery.{h,cpp}
-│  │  └─ peerdirectory.{h,cpp}       # peers hold address sets
+│  │  ├─ peerdirectory.{h,cpp}       # peers hold address sets
+│  │  └─ peerconnector.{h,cpp}       # try the address set in order, short per-address timeout
 │  ├─ http/
 │  │  ├─ httprequest.h        # our framing: parse + hardening limits
 │  │  └─ httpserver.{h,cpp}   # QTcpServer + QSslServer
@@ -633,7 +634,8 @@ lanpipe/
 │  ├─ files/
 │  │  ├─ filesource.h         # open / size / displayName
 │  │  ├─ filesink.h
-│  │  └─ localsink.{h,cpp}    # desktop implementation
+│  │  ├─ localsink.{h,cpp}    # desktop implementation
+│  │  └─ atomicwrite.{h,cpp}  # write-then-rename, shared by identity and trust
 │  ├─ trust/
 │  │  ├─ truststore.{h,cpp}   # paired peers + block list
 │  │  ├─ sanitizer.{h,cpp}    # filename rules

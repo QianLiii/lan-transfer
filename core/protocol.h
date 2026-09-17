@@ -117,6 +117,10 @@ inline constexpr auto kSasInputWindow = std::chrono::minutes(2);
 // 30000 ms，会与接收方的审批窗口精确竞争（§5.9）。
 inline constexpr auto kSenderHttpTimeout = std::chrono::minutes(3);
 
+// 逐个地址尝试时，每个地址的**连接建立**时限（§3.3）。同一台设备在多个网段上都有
+// 地址，连错一个要等 30–75 秒的 SYN 重试；换下一个比等它快得多。
+inline constexpr auto kAddressConnectTimeout = std::chrono::seconds(3);
+
 // 传输停滞判定：上传阶段「零进度」持续这么久即判定连接已死，双向适用（§5.8）。
 // 只在上传阶段计时——prepare 等待审批期间没有字节流动，用同一个值会误杀审批中的会话。
 inline constexpr auto kStallTimeout = std::chrono::seconds(30);

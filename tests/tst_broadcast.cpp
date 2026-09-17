@@ -184,6 +184,56 @@ private slots:
         QCOMPARE(decoded->deviceId, sampleAdvertisement().deviceId);
     }
 
+    // 只浏览不通告：发送方没有在监听，通告出去只会让别人连到一个不存在的端口。
+    void browseOnlyModeSendsNothing()
+    {
+        RawReceiver receiver;
+        QVERIFY(receiver.open());
+
+        BroadcastDiscovery discovery({.self = sampleAdvertisement(),
+                                      .announce = false,
+                                      .bindAddress = QHostAddress::LocalHost,
+                                      .bindPort = 0,
+                                      .sendPort = receiver.port(),
+                                      .targets = {QHostAddress::LocalHost},
+                                      .interval = std::chrono::milliseconds(20),
+                                      .jitter = std::chrono::milliseconds(0)});
+        discovery.start();
+        QVERIFY(discovery.lastError().isEmpty());
+
+        QTest::qWait(200); // 足够发好几轮
+        QCOMPARE(receiver.datagramCount(), 0);
+    }
+
+    // 通告关掉之后，端口为 0 也不再是错误——本来就没有东西要通告。
+    void browseOnlyModeStartsWithoutAPort()
+    {
+        Advertisement self = sampleAdvertisement();
+        self.port = 0;
+
+        BroadcastDiscovery discovery({.self = self,
+                                      .announce = false,
+                                      .bindAddress = QHostAddress::LocalHost,
+                                      .bindPort = 0,
+                                      .sendPort = 0,
+                                      .targets = {QHostAddress::LocalHost},
+                                      .interval = std::chrono::seconds(30),
+                                      .jitter = std::chrono::milliseconds(0)});
+        discovery.start();
+        QVERIFY(discovery.lastError().isEmpty());
+
+        // 但通告开启时仍然要求有端口。
+        BroadcastDiscovery announcing({.self = self,
+                                       .bindAddress = QHostAddress::LocalHost,
+                                       .bindPort = 0,
+                                       .sendPort = 0,
+                                       .targets = {QHostAddress::LocalHost},
+                                       .interval = std::chrono::seconds(30),
+                                       .jitter = std::chrono::milliseconds(0)});
+        announcing.start();
+        QVERIFY(!announcing.lastError().isEmpty());
+    }
+
     // 自己发的广播会回环到本机，必须按 deviceId 滤掉，否则目录里会出现自己。
     void ignoresOwnAnnouncements()
     {

@@ -44,6 +44,10 @@ public:
         // 本机对外通告的内容。deviceId 同时用于过滤自己发出的广播。
         Advertisement self;
 
+        // 是否对外通告。发送方只找人不被找——它没有在监听，通告出去也没有意义，
+        // 反而会让别人连到一个不存在的端口。关掉之后只收不发。
+        bool announce = true;
+
         QHostAddress bindAddress = QHostAddress::AnyIPv4;
         quint16 bindPort = proto::kBroadcastPort; // 0 表示由系统分配，与 bind() 的语义一致
 
