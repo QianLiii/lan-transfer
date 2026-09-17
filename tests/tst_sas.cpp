@@ -1,4 +1,4 @@
-// SAS 与它的缓存（§4 配对）。
+// SAS（§4 配对）。
 //
 // 这个文件里的断言都在守同一件事：两端只要输入相同就必须算出同一个码，
 // 输入一旦不同（中间人必然造成这种情况）就必须不同。
@@ -17,9 +17,10 @@ const Fingerprint kSender = *Fingerprint::fromHex(
     QStringLiteral("1111111111111111111111111111111111111111111111111111111111111111"));
 const Fingerprint kReceiver = *Fingerprint::fromHex(
     QStringLiteral("2222222222222222222222222222222222222222222222222222222222222222"));
+const Fingerprint kMitm = *Fingerprint::fromHex(
+    QStringLiteral("3333333333333333333333333333333333333333333333333333333333333333"));
 
 const QString kCnonce = QStringLiteral("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-const QString kSnonce = QStringLiteral("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
 } // namespace
 
@@ -31,8 +32,8 @@ private slots:
     void bothSidesAgreeOnTheSameInput()
     {
         // 两端调用的参数顺序不同、取值相同，结果必须一致。
-        const QByteArray senderSide = computeSas(kSender, kReceiver, kCnonce, kSnonce);
-        const QByteArray receiverSide = computeSas(kSender, kReceiver, kCnonce, kSnonce);
+        const QByteArray senderSide = computeSas(kSender, kReceiver, kCnonce);
+        const QByteArray receiverSide = computeSas(kSender, kReceiver, kCnonce);
         QCOMPARE(senderSide, receiverSide);
 
         // 同一个 SAS，两端的取用方式相反：发送方显示前半、要求后半；
@@ -51,12 +52,8 @@ private slots:
     void eachSideRejectsWhatTheOtherWouldShowUnderMitm()
     {
         // 左侧：发送方看到的是中间人的证书；右侧：接收方看到的也是中间人的证书。
-        const Fingerprint mitm = *Fingerprint::fromHex(
-            QStringLiteral("3333333333333333333333333333333333333333333333333333333333333333"));
-        const SasCode sender = sasCode(SasRole::Sender,
-                                       computeSas(kSender, mitm, kCnonce, kSnonce));
-        const SasCode receiver = sasCode(SasRole::Receiver,
-                                         computeSas(mitm, kReceiver, kCnonce, kSnonce));
+        const SasCode sender = sasCode(SasRole::Sender, computeSas(kSender, kMitm, kCnonce));
+        const SasCode receiver = sasCode(SasRole::Receiver, computeSas(kMitm, kReceiver, kCnonce));
 
         QVERIFY(!sender.matches(receiver.shown));
         QVERIFY(!receiver.matches(sender.shown));
@@ -64,30 +61,30 @@ private slots:
 
     void everyInputParticipates()
     {
-        const QByteArray baseline = computeSas(kSender, kReceiver, kCnonce, kSnonce);
+        const QByteArray baseline = computeSas(kSender, kReceiver, kCnonce);
 
-        // 四项输入各自变化都必须改变结果。少用一项（例如漏掉 snonce）时，
-        // 中间人只要重复上一轮的取值就能让两端算出同一个码。
-        QVERIFY(computeSas(kReceiver, kSender, kCnonce, kSnonce) != baseline); // 顺序
-        QVERIFY(computeSas(kSender, kReceiver, kSnonce, kCnonce) != baseline); // 两个 nonce 互换
-        QVERIFY(computeSas(kSender, kSender, kCnonce, kSnonce) != baseline);   // 指纹
-        QVERIFY(computeSas(kSender, kReceiver, kSnonce, kSnonce) != baseline); // cnonce
-        QVERIFY(computeSas(kSender, kReceiver, kCnonce, kCnonce) != baseline); // snonce
+        // 三项输入各自变化都必须改变结果。少用一项时，中间人只要重复上一轮的取值
+        // 就能让两端算出同一个码。
+        QVERIFY(computeSas(kReceiver, kSender, kCnonce) != baseline); // 两个指纹的顺序
+        QVERIFY(computeSas(kSender, kMitm, kCnonce) != baseline);     // 发送方看到的指纹
+        QVERIFY(computeSas(kMitm, kReceiver, kCnonce) != baseline);   // 接收方看到的指纹
+        QVERIFY(computeSas(kSender, kReceiver,
+                           QStringLiteral("cccccccccccccccccccccccccccccccc"))
+                != baseline); // cnonce
     }
 
-    // 中间人的两条连接各有一对 nonce，算出的码必然不同——用户一比就能看出来。
+    // 中间人的两条连接各有一个 cnonce，算出的码必然不同。
     void differentNoncesDifferentCodes()
     {
-        const QByteArray left = computeSas(kSender, kReceiver, kCnonce, kSnonce);
-        const QByteArray right = computeSas(kSender, kReceiver, kCnonce,
+        const QByteArray left = computeSas(kSender, kReceiver, kCnonce);
+        const QByteArray right = computeSas(kSender, kReceiver,
                                             QStringLiteral("cccccccccccccccccccccccccccccccc"));
         QVERIFY(left != right);
     }
 
     void eachHalfIsSixDigits()
     {
-        const SasCode code = sasCode(SasRole::Sender,
-                                     computeSas(kSender, kReceiver, kCnonce, kSnonce));
+        const SasCode code = sasCode(SasRole::Sender, computeSas(kSender, kReceiver, kCnonce));
         QCOMPARE(code.shown.size(), 6);
         QCOMPARE(code.asked.size(), 6);
         for (const QChar c : code.shown + code.asked)
@@ -122,8 +119,7 @@ private slots:
     // 它必须对空输入与半截输入都给出「不匹配」。
     void matchesOnlyAcceptsTheExactSixDigits()
     {
-        const SasCode code = sasCode(SasRole::Sender,
-                                     computeSas(kSender, kReceiver, kCnonce, kSnonce));
+        const SasCode code = sasCode(SasRole::Sender, computeSas(kSender, kReceiver, kCnonce));
 
         QVERIFY(code.matches(code.asked));
         QVERIFY(code.matches(QStringLiteral(" %1 ").arg(code.asked)));
@@ -134,62 +130,6 @@ private slots:
         QVERIFY(!code.matches(code.asked.left(5))); // 少一位
         QVERIFY(!code.matches(code.asked + QLatin1Char('0')));
         QVERIFY(!code.matches(QStringLiteral("abcdef")));
-    }
-
-    // —————————————— 缓存 ——————————————
-
-    void cacheReturnsWhatWasStored()
-    {
-        SasCache cache;
-        const QDateTime now = QDateTime::currentDateTimeUtc();
-        const SasCode code{QStringLiteral("123456"), QStringLiteral("654321")};
-        cache.store(QStringLiteral("peer1"), {code, kSender, now});
-
-        const auto entry = cache.lookup(QStringLiteral("peer1"), now);
-        QVERIFY(entry.has_value());
-        QCOMPARE(entry->code.shown, QStringLiteral("123456"));
-        QCOMPARE(entry->code.asked, QStringLiteral("654321"));
-        QCOMPARE(entry->peerFingerprint.bytes(), kSender.bytes());
-    }
-
-    void cacheExpiresOldEntries()
-    {
-        SasCache cache;
-        const QDateTime now = QDateTime::currentDateTimeUtc();
-        cache.store(QStringLiteral("peer1"),
-                    {SasCode{QStringLiteral("123456"), QStringLiteral("654321")}, kSender, now});
-
-        // 未过期
-        QVERIFY(cache.lookup(QStringLiteral("peer1"),
-                             now + proto::kSasLifetime - std::chrono::seconds(1))
-                    .has_value());
-        // 刚过期
-        QVERIFY(!cache.lookup(QStringLiteral("peer1"),
-                              now + proto::kSasLifetime + std::chrono::seconds(1))
-                     .has_value());
-    }
-
-    void cacheIsPerDevice()
-    {
-        SasCache cache;
-        const QDateTime now = QDateTime::currentDateTimeUtc();
-        cache.store(QStringLiteral("peer1"),
-                    {SasCode{QStringLiteral("111111"), QStringLiteral("111112")}, kSender, now});
-        cache.store(QStringLiteral("peer2"),
-                    {SasCode{QStringLiteral("222221"), QStringLiteral("222222")}, kReceiver, now});
-
-        QCOMPARE(cache.lookup(QStringLiteral("peer1"), now)->code.shown, QStringLiteral("111111"));
-        QCOMPARE(cache.lookup(QStringLiteral("peer2"), now)->code.shown, QStringLiteral("222221"));
-        QVERIFY(!cache.lookup(QStringLiteral("peer3"), now).has_value());
-    }
-
-    void cacheRejectsEmptyDeviceId()
-    {
-        SasCache cache;
-        cache.store(QString(),
-                    {SasCode{QStringLiteral("123456"), QStringLiteral("654321")}, kSender,
-                     QDateTime::currentDateTimeUtc()});
-        QCOMPARE(cache.size(), qsizetype{0});
     }
 };
 

@@ -39,8 +39,12 @@ add_library(lanpipe_core STATIC
     discovery/peerdirectory.cpp
     discovery/broadcastdiscovery.h
     discovery/broadcastdiscovery.cpp
+    trust/truststore.h
+    trust/truststore.cpp
     files/filesource.h
     files/filesink.h
+    files/atomicwrite.h
+    files/atomicwrite.cpp
 )
 
 target_include_directories(lanpipe_core PUBLIC

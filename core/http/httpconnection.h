@@ -62,6 +62,11 @@ public:
     // 立刻断开，不发任何响应。
     void abort();
 
+    // 暂停/恢复空闲计时。处理器要把这条连接挂起等一个人（例如等用户输入配对码），
+    // 而那期间没有任何字节流动——不暂停就会被当成死连接掐掉（§5.8）。
+    void pauseIdleTimeout();
+    void resumeIdleTimeout();
+
 signals:
     void bodyComplete();
     void finished(); // 连接已断开，可以销毁
@@ -91,6 +96,7 @@ private:
     RequestHead m_head;
     bool m_responded = false;
     bool m_closed = false;
+    bool m_idlePaused = false;
 
     BodySink m_bodySink;
     quint64 m_bodyRemaining = 0;

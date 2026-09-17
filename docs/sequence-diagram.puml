@@ -31,16 +31,19 @@ S -> R : TLS handshake\nclient certificate required (mutual TLS)
 note right of S
   Client pins the receiver fp: trust store first, discovery hint second.
   Server: VerifyPeer + setMissingCertificateIsFatal (Qt 6 needs both — missingCert
-  is not fatal by default); fail closed on a missing or unparseable client cert;
-  recomputes deviceId from the client cert's public key and compares it with
-  the claimed sender id. Observed fp ≠ trust store → reject:
-  "device identity changed, pair again".
+  is not fatal by default); fail closed on a missing or unparseable client cert.
+  Identity is resolved once, at the connection layer — handlers never re-parse it.
+  A paired deviceId whose fingerprint disagrees is rejected; note that deviceId is
+  itself the fingerprint's prefix, so that check is a cheap backstop (corrupted
+  store, prefix collision), not detection of a peer that changed its key — such a
+  peer simply appears as a new, unpaired deviceId.
   One request per connection — every response closes the connection.
 end note
-S -> R : GET /api/v1/ping?cnonce=<hex>
-R --> S : 200 { deviceId, name, ver, fp, snonce, reachable }
+S -> R : POST /api/v1/ping\n{ cnonce, name } — POST so the receiver's user can see who is asking
+R -> R : verifies its user's typed half, then answers
+R --> S : 200 { deviceId, name, ver, fp, reachable } — receiver verified too
 S -> S : ver check — major mismatch aborts with an explicit message
-S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)\nfp = the certificates actually observed in this handshake\n12 digits = first 8 bytes big-endian mod 10^12, zero-padded
+S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce)\nfp = the certificates actually observed in this handshake\n12 digits = first 8 bytes big-endian mod 10^12, zero-padded
 R -> R : same computation, same inputs
 note over S, R
   Each end displays one half and requires the other half as input:
@@ -48,16 +51,21 @@ note over S, R
     sender    displays digits 1-6   requires digits 7-12
     receiver  displays digits 7-12  requires digits 1-6
 
+  Only one nonce, and it comes from the sender: each end must be able to compute
+  its half before it needs anything from the other, because the receiver types
+  BEFORE it answers. With a receiver-supplied nonce the sender could not compute
+  anything until the response arrived, and the receiver would be waiting for the
+  sender's half — a three-way deadlock.
+
   Each end compares what its user typed with its own computation, so neither
   depends on the other's word, and typing your own screen's half always fails.
   Two halves must both match, which is what makes the MITM's grind cost 10^12
-  instead of 10^6 — it knows all four inputs and can substitute both nonces.
+  instead of 10^6 — it knows every input and can substitute the relayed cnonce.
 
   The code never travels over the wire.
-  It is settled HERE, not during prepare: on a later connection the sender
-  could not obtain a fresh receiver nonce before its user must decide.
   Later connections are verified by fingerprint pinning, not by recomputing the SAS.
 end note
+S -> S : asks its user for the receiver's half, compares, writes the trust store
 
 == Connection 2 — prepare ==
 
@@ -68,15 +76,13 @@ alt sender paired on the receiver
   R -> R : policy: auto-accept, notification only
   R --> S : 200 { sessionId }
 else unknown sender
-  R -> V : approval prompt: sender name, file count,\ntotal size, and the cached code — asks for the sender's half
+  R -> V : approval prompt: sender name, file count, total size
   note over U, V
-    The two users read each other's screen out loud. Each types the other
-    end's half into their own app, which compares it locally and aborts on a
-    mismatch. Nothing about the code crosses the network.
+    Identity was settled at ping. This prompt is about the transfer itself —
+    what the user approves here is "these files from this already-verified peer".
+    Both ends wrote the trust store during the ping round trip.
   end note
-  V -> R : typed digits match the receiver's own computation — accept
-  R -> R : trust store += sender (observed fp, name)
-  S -> S : trust store += receiver (observed fp, name)
+  V -> R : accept
   R --> S : 200 { sessionId }
 else sender blocked, or user rejects
   R --> S : 403 { reason }
@@ -88,7 +94,8 @@ end
 note over S, R
   prepare also checks free space → 507 if short.
   The approved file sizes and totalSize are hard caps for the whole session (§5.3).
-  Sender HTTP timeout is 45 s — above the receiver's 30 s decision window.
+  Sender HTTP timeout is 3 min — above the receiver's 2 min pairing input window
+  and its 30 s decision window.
 end note
 
 == Connections 3..n — upload (one PUT per TLS connection, sequential) ==

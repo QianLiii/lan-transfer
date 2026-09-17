@@ -6,13 +6,11 @@
 #include <QLatin1Char>
 #include <QtEndian>
 
-#include <chrono>
 
 namespace lanpipe {
 
 QByteArray computeSas(const Fingerprint &senderFingerprint,
-                      const Fingerprint &receiverFingerprint, const QString &cnonce,
-                      const QString &snonce)
+                      const Fingerprint &receiverFingerprint, const QString &cnonce)
 {
     // 直接拼接，不加分隔符：两个指纹都是定长 32 字节，边界由长度确定，
     // 不存在「谁的字节接到谁头上」的歧义。
@@ -20,7 +18,6 @@ QByteArray computeSas(const Fingerprint &senderFingerprint,
     hash.addData(senderFingerprint.bytes());
     hash.addData(receiverFingerprint.bytes());
     hash.addData(cnonce.toLatin1());
-    hash.addData(snonce.toLatin1());
     return hash.result();
 }
 
@@ -54,27 +51,6 @@ SasCode sasCode(SasRole role, const QByteArray &sas)
     const QString first = digits.left(proto::kSasCodeDigits);
     const QString second = digits.mid(proto::kSasCodeDigits);
     return role == SasRole::Sender ? SasCode{first, second} : SasCode{second, first};
-}
-
-void SasCache::store(const QString &peerDeviceId, Entry entry)
-{
-    if (peerDeviceId.isEmpty())
-        return;
-    m_entries.insert(peerDeviceId, std::move(entry));
-}
-
-std::optional<SasCache::Entry> SasCache::lookup(const QString &peerDeviceId,
-                                                const QDateTime &now) const
-{
-    const auto it = m_entries.constFind(peerDeviceId);
-    if (it == m_entries.constEnd())
-        return std::nullopt;
-
-    const auto age = std::chrono::seconds(it->settledAt.secsTo(now));
-    if (age > proto::kSasLifetime)
-        return std::nullopt;
-
-    return *it;
 }
 
 } // namespace lanpipe

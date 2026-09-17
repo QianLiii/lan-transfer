@@ -355,40 +355,61 @@ Qt 6.11 facts verified against the source (each one silently breaks mTLS if miss
 The code must be computed **independently at both ends** and compared by the users. A code sent
 over the wire protects nothing: a man in the middle simply relays it.
 
-1. The sender includes a client nonce (`cnonce`) in `GET /api/v1/ping`; the receiver answers with
-   its own (`snonce`) plus its fingerprint.
-2. Both sides compute `SAS = H(fp_A ‖ fp_B ‖ cnonce ‖ snonce)`, where each `fp` is the
-   certificate fingerprint **that side observed in the TLS handshake** — the client reads
+1. The sender includes a client nonce (`cnonce`) in `POST /api/v1/ping`, along with its device
+   name. POST rather than GET because the receiver's user must see *who* is asking before being
+   asked to type anything, and neither the query string nor a request header can carry a UTF-8
+   name (§5.15 admits visible ASCII only).
+2. Both sides compute `SAS = H(fp_A ‖ fp_B ‖ cnonce)`, where each `fp` is the certificate
+   fingerprint **that side observed in the TLS handshake** — the client reads
    `QSslSocket::peerCertificate()`, the server reads the client certificate (guaranteed present
    by mTLS). Never use the value from discovery.
-3. **The code is settled by this exchange and cached per `deviceId`.** Because each request uses
-   its own connection (§5.15), `prepare` arrives on a different connection from the one the
-   nonces were exchanged on. The SAS must not be recomputed there: the sender would need the
-   receiver's fresh `snonce`, which can only arrive with the `prepare` response — and the user
-   has to see the code before deciding whether to answer that response. That is the deadlock this
-   design avoids. `prepare` therefore carries no nonce; the receiver displays the cached code in
-   its approval prompt, and the sender displays it right after `ping`.
-4. **Twelve digits, split into two halves, each end displaying one and requiring the other.**
+
+   **Only one nonce, and it comes from the sender.** Each side must be able to compute the code
+   *before* it needs anything from the other, because the receiver types its half before it
+   answers: with a receiver-supplied nonce the sender could not compute anything until the
+   response arrived, while the receiver would be waiting for the sender's half to be displayed —
+   a three-way deadlock. Dropping it costs nothing: what makes the two sides differ is `fp_A`
+   versus `fp_B`, not freshness, and the MITM controls the relayed `cnonce` either way, so the
+   grinding cost below is unchanged.
+3. **Twelve digits, split into two halves, each end displaying one and requiring the other.**
    The digits are the first 8 bytes of the hash read as a big-endian integer, modulo 10¹², zero
    padded. The sender displays the first six and requires the second six as input; the receiver
-   displays the second six and requires the first six. Each end then compares the typed value
-   with **its own** computation and aborts on a mismatch. On success the peer is written to the
-   trust list with the observed fingerprint and name.
+   displays the second six and requires the first six. Each end compares the typed value with
+   **its own** computation and aborts on a mismatch:
 
-   Why split rather than both ends displaying the same six digits. The MITM knows all four inputs
-   — it terminates both TLS sessions, so it sees both certificates, both nonces and every byte of
-   the ping — and the two nonces are unbound: `cnonce` is a plain query parameter and `snonce` a
-   JSON field, so the MITM may substitute either. It can therefore **grind**: fix the receiver's
-   side, then search a substituted `snonce` until the sender's code equals the receiver's, about
-   10⁶ hashes, offline, milliseconds. Both screens then show the same six digits and a diligent
-   user is defeated. Splitting makes both halves have to match, which costs 10¹² hashes, and it
-   gives each end an independent machine check — neither has to trust the other's claim that it
-   compared. It also removes the "type the digits off your own screen" shortcut, which would
-   otherwise let a lazy user self-confirm. The residual 10⁻⁶ chance that the two halves are
-   equal is the same magnitude as the code's own strength and is not handled separately.
+   ```
+   1. sender    computes its half before sending, displays it, sends the ping
+   2. receiver  computes its half, displays it, asks its user for the sender's half
+   3. receiver  compares, then answers — 200 means it verified too, 403 means it did not
+   4. sender    asks its user for the receiver's half, compares, writes the trust store
+   ```
+
+   The sender learns the receiver's verdict from the response; the receiver learns nothing about
+   the sender's, and does not need to — each side's trust entry rests on its own comparison.
+
+   Why split rather than both ends displaying the same six digits. The MITM knows every input —
+   it terminates both TLS sessions, so it sees both certificates and the whole ping — and it may
+   substitute the relayed `cnonce`. It can therefore **grind**: search a substituted `cnonce`
+   until the sender's code equals the receiver's, about 10⁶ hashes, offline, milliseconds. Both
+   screens then show the same six digits and a diligent user is defeated. Splitting makes both
+   halves have to match, which costs 10¹² hashes, and gives each end an independent machine
+   check — neither has to trust the other's claim that it compared. It also removes the "type the
+   digits off your own screen" shortcut, which would otherwise let a lazy user self-confirm. The
+   residual 10⁻⁶ chance that the two halves are equal is the same magnitude as the code's own
+   strength and is not handled separately.
+4. Both ends write the peer to the trust list with the observed fingerprint and name — on their
+   own comparison, not on the other end's word.
 5. After pairing, the trust store is the authority — subsequent connections are verified by
-   fingerprint pinning, not by recomputing the SAS. A fingerprint that disagrees with the trust
-   store is rejected with a "device identity changed, pair again" message.
+   fingerprint pinning, not by recomputing the SAS.
+
+**There is no SAS cache.** Both comparisons happen inside the one ping round trip, so nothing has
+to be remembered for a later request. An earlier revision cached the code until `prepare`; that
+existed only because the receiver's comparison had been deferred to the approval prompt, and it
+brought with it a lifetime constant that silently expired mid-flow.
+
+**How long a pairing may take.** Both ends wait for their user up to `kSasInputWindow` (2 min),
+and the sender's HTTP timeout sits above that (`kSenderHttpTimeout`, 3 min). The receiver waits
+*before* answering, so its window is the one that bounds the round trip.
 
 Why not derive the SAS from the TLS transcript: Qt exposes no keying material, no transcript, no
 `SSL*` handle and no `SSLKEYLOGFILE` support — `export_keying_material` and equivalents do not
@@ -429,12 +450,17 @@ Receiver hosts the HTTPS server. Sender connects. All bodies streamed, never buf
 End-to-end sequence: `docs/sequence-diagram.puml` (regenerated to match this revision).
 
 ```
-GET  /api/v1/ping?cnonce=<hex>
-     → 200 { "deviceId", "name", "ver", "fp", "snonce", "reachable" }
+POST /api/v1/ping                                    (JSON)
+     { cnonce, name }
+     → 200 { "deviceId", "name", "ver", "fp", "reachable" }   receiver verified too
+     → 403                                                    receiver's user typed a mismatch
+     → 409                                                    another pairing is already in progress
+     → 504                                                    no user input within 2 min
+     Note: the receiver answers only after its user has typed — step 3 in §4 pairing.
 
 POST /api/v1/prepare                                    (JSON)
      { sender: { id, name }, files: [ { id, name, size, mime } ], totalSize }
-     Note: no nonce here — the SAS was settled at /ping and is read from the cache (§4).
+     Note: no nonce here — the SAS was settled at /ping (§4).
      → 200 { sessionId }                     accepted
      → 403 { reason }                        rejected by user or policy
      → 409 { reason, retryAfter }            another session is active

@@ -10,6 +10,7 @@
 
 #include "identity.h"
 #include "ping.h"
+#include "trust/truststore.h"
 
 #include <QObject>
 #include <QString>
@@ -38,14 +39,24 @@ public:
         SasCode code;
     };
 
-    explicit PingClient(QObject *parent = nullptr);
+    // trust 的生命周期由调用方保证。配对成功后由本类的调用方写入信任库——
+    // 「用户确认过」这个前提只有上层知道。
+    explicit PingClient(trust::TrustStore &trust, QObject *parent = nullptr);
 
-    // expected 非空时要求对端指纹完全相等——配对完成后的常规路径（§4 规则 5）。
-    // 为空时接受并在结果里回报观察到的指纹：首次配对的 TOFU，由用户比对码来兜底。
-    void start(const QUrl &url, const Identity &identity,
+    // name 是本机设备名，随请求一起送过去：接收方的用户在被要求输入配对码之前，
+    // 得先在屏幕上看到这是谁。
+    //
+    // expected 非空时要求对端指纹完全相等——配对完成后的常规路径（§4 规则 5），
+    // 也是 --pin 走的非交互路径。为空时接受并在结果里回报观察到的指纹：
+    // 首次配对的 TOFU，由用户比对码来兜底。
+    void start(const QUrl &url, const Identity &identity, const QString &name,
                std::optional<Fingerprint> expected = std::nullopt);
 
 signals:
+    // 握手完成、对端指纹已核对。此刻本端那半就能显示出来了——响应还没到，
+    // 而接收方那边正在等它的用户输入，所以这一半必须先出现在屏幕上。
+    void peerAdopted(const lanpipe::SasCode &code);
+
     void finished(const lanpipe::transfer::PingClient::Result &result);
 
 private:
@@ -55,11 +66,13 @@ private:
     void report(Result result);
 
     QNetworkAccessManager *m_manager = nullptr;
+    trust::TrustStore &m_trust;
     Identity m_identity;
     std::optional<Fingerprint> m_expected;
     QString m_cnonce;
     Fingerprint m_peerFingerprint;
     QString m_handshakeError;
+    SasCode m_code;
     bool m_reported = false;
 };
 

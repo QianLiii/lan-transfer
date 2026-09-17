@@ -16,8 +16,12 @@
 #include "tlsbackend.h"
 #include "transfer/ping.h"
 #include "transfer/pingclient.h"
+#include "trust/truststore.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QSysInfo>
+#include <QElapsedTimer>
 #include <QString>
 #include <QStringList>
 #include <QTextStream>
@@ -161,6 +165,15 @@ std::optional<lanpipe::Identity> loadIdentity()
     return *identity;
 }
 
+// 设备名。Settings 为空时回退到主机名并落盘——这个名字会广播到局域网（§3.2），
+// GUI 上会让用户确认一次；CLI 用主机名足够，但必须有个名字，否则接收方的用户是在
+// 为一条没有名字的连接输入配对码。
+void ensureDeviceName(lanpipe::Settings &settings)
+{
+    if (settings.deviceName().isEmpty())
+        settings.setDeviceName(QSysInfo::machineHostName());
+}
+
 void printIdentity(const lanpipe::Identity &identity)
 {
     writeStdout(QStringLiteral("deviceId %1").arg(identity.deviceId()));
@@ -175,17 +188,56 @@ int runServe(const Options &options)
     if (!identity.has_value())
         return kExitFailure;
 
-    // 身份、设置、SAS 缓存三者的生命周期必须覆盖整个服务期，因此都放在这里。
+    // 身份、设置、信任库三者的生命周期必须覆盖整个服务期，因此都放在这里。
     Settings settings;
-    SasCache sasCache;
-    http::HttpServer server;
-    transfer::PingService ping(*identity, settings, sasCache, &server);
+    ensureDeviceName(settings);
+    auto trust = trust::TrustStore::load();
+    if (!trust.has_value()) {
+        writeStderr(trust.error());
+        return kExitFailure;
+    }
 
-    // 接收方这一侧的码：与发送方屏幕上显示的那一串必须相等（§4 规则 3）。
-    QObject::connect(&ping, &transfer::PingService::codeSettled,
-                     [](const QString &peerDeviceId, const SasCode &code) {
-                         writeStdout(QStringLiteral("本机显示的码 %1（对端 %2）—— 请念给对方输入")
-                                         .arg(code.shown, peerDeviceId.left(8)));
+    http::HttpServer server;
+    transfer::PingService ping(*identity, settings, *trust, &server);
+
+    QObject::connect(
+        &ping, &transfer::PingService::inputRequired,
+        [&ping](const QString &peerDeviceId, const QString &peerName, const SasCode &code) {
+            writeStdout(QStringLiteral("配对请求：%1（%2）").arg(peerName, peerDeviceId.left(8)));
+            writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方").arg(code.shown));
+            writeStdout(
+                QStringLiteral("请输入对方屏幕上显示的 %1 位数字：").arg(proto::kSasCodeDigits));
+
+            // 同步读一行：这一刻整个服务都停在这里，这是单会话模型的直接后果，
+            // 也意味着 kSasInputWindow 的计时器在 CLI 下不会响（事件循环没在转）。
+            // 对端放弃时会通过连接的 finished 把这次配对作废，所以不会留下
+            // 「对方早已走了、我们却记下配对」的记录。GUI 版（M5）用异步输入。
+            QTextStream in(stdin);
+            ping.submitInput(in.readLine());
+        });
+
+    QObject::connect(&ping, &transfer::PingService::pairingFinished,
+                     [](const QString &peerDeviceId, transfer::PingService::Outcome outcome) {
+                         using Outcome = transfer::PingService::Outcome;
+                         const QString peer = peerDeviceId.left(8);
+                         switch (outcome) {
+                         case Outcome::Accepted:
+                             writeStdout(QStringLiteral("已配对 %1，已写入信任库。").arg(peer));
+                             break;
+                         case Outcome::Mismatch:
+                             writeStderr(QStringLiteral(
+                                 "配对码不一致：%1 屏幕上显示的与本机算出的不同。\n"
+                                 "若不是输错了，这条连接的另一端就不是你以为的那台设备。")
+                                             .arg(peer));
+                             break;
+                         case Outcome::TimedOut:
+                             writeStderr(QStringLiteral("等对方输入超时（%1）。")
+                                             .arg(peer));
+                             break;
+                         case Outcome::Rejected:
+                             writeStderr(QStringLiteral("配对被拒绝（%1）。").arg(peer));
+                             break;
+                         }
                      });
 
     server.setHandler([&ping](http::HttpConnection &connection) {
@@ -276,9 +328,23 @@ int runPair(const Options &options)
     if (!identity.has_value())
         return kExitFailure;
 
-    PingClient client;
+    auto trust = trust::TrustStore::load();
+    if (!trust.has_value()) {
+        writeStderr(trust.error());
+        return kExitFailure;
+    }
+
+    Settings settings;
+    ensureDeviceName(settings);
+
+    PingClient client(*trust);
+    // 本端那半在握手完成时就能显示，**早于响应**——接收方那边正等着它的用户
+    // 输入这一半，所以它必须先出现在屏幕上。
+    QObject::connect(&client, &PingClient::peerAdopted, [](const SasCode &code) {
+        writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方").arg(code.shown));
+    });
     QObject::connect(&client, &PingClient::finished,
-                     [&options](const PingClient::Result &result) {
+                     [&options, &trust, &identity](const PingClient::Result &result) {
                          if (!result.ok) {
                              writeStderr(result.error);
                              QCoreApplication::exit(kExitFailure);
@@ -288,9 +354,6 @@ int runPair(const Options &options)
                          writeStdout(QStringLiteral("deviceId %1").arg(result.info.deviceId));
                          writeStdout(QStringLiteral("指纹     %1")
                                          .arg(result.peerFingerprint.toHex()));
-                         writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方")
-                                         .arg(result.code.shown));
-
                          // 非交互路径：--pin 已经指定了对端指纹，--yes 是测试开关
                          // （见 usageText 的说明）。两者都不需要人工比对。
                          if (!options.pin.isEmpty() || options.assumeYes) {
@@ -302,8 +365,25 @@ int runPair(const Options &options)
                          writeStdout(QStringLiteral(
                              "请输入对方屏幕上显示的 %1 位数字（本机不显示它）：")
                                          .arg(proto::kSasCodeDigits));
+
+                         // 窗口用「读完看耗时」来判：Qt 没有跨平台的定时 stdin 读
+                         // （QSocketNotifier 对 Windows 控制台句柄不适用），而起线程
+                         // 只为计时不值当。晚到的答案一律拒绝。
+                         QElapsedTimer timer;
+                         timer.start();
                          QTextStream in(stdin);
                          const QString input = in.readLine();
+                         const bool late = std::chrono::milliseconds(timer.elapsed())
+                             > proto::kSasInputWindow;
+
+                         if (late) {
+                             writeStderr(QStringLiteral("等输入超过了 %1 秒，本次配合作废。")
+                                             .arg(std::chrono::duration_cast<std::chrono::seconds>(
+                                                      proto::kSasInputWindow)
+                                                      .count()));
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
 
                          if (!result.code.matches(input)) {
                              writeStderr(QStringLiteral(
@@ -316,13 +396,26 @@ int runPair(const Options &options)
                              return;
                          }
 
-                         writeStdout(QStringLiteral("配对码一致。"));
+                         // 两端各自比对通过之后才写入信任库，写的是握手时观察到的指纹。
+                         QString error;
+                         if (!trust->add({result.info.deviceId, result.peerFingerprint.toHex(),
+                                          result.info.name, QDateTime::currentDateTimeUtc()},
+                                         &error)) {
+                             writeStderr(error);
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
+
+                         writeStdout(QStringLiteral("配对码一致，已配对 %1，已写入信任库。")
+                                         .arg(result.info.deviceId.left(8)));
+                         Q_UNUSED(identity);
                          QCoreApplication::exit(kExitOk);
                      });
 
     printIdentity(*identity);
     writeStdout(QStringLiteral("正在连接 %1:%2").arg(host).arg(port));
-    client.start(QUrl(QStringLiteral("https://%1:%2").arg(host).arg(port)), *identity, expected);
+    client.start(QUrl(QStringLiteral("https://%1:%2").arg(host).arg(port)), *identity,
+                 settings.deviceName(), expected);
     return QCoreApplication::exec();
 }
 

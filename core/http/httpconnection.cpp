@@ -93,9 +93,24 @@ void HttpConnection::abort()
     m_socket->abort();
 }
 
+void HttpConnection::pauseIdleTimeout()
+{
+    m_idlePaused = true;
+    m_idleTimer->stop();
+}
+
+void HttpConnection::resumeIdleTimeout()
+{
+    if (!m_idlePaused)
+        return;
+    m_idlePaused = false;
+    m_idleTimer->start();
+}
+
 void HttpConnection::onReadyRead()
 {
-    m_idleTimer->start(); // 每收到一批数据就是一次进度
+    if (!m_idlePaused)
+        m_idleTimer->start(); // 每收到一批数据就是一次进度
 
     switch (m_phase) {
     case Phase::ReadingHead:

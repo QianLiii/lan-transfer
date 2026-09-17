@@ -33,9 +33,6 @@ private slots:
     // 路径构造必须与常量前缀一致，否则收发两端有一端会拼出对方路由不认识的路径。
     void pathBuildersMatchPrefixes()
     {
-        QCOMPARE(QString::fromStdString(pingPath("aabbcc")),
-                 QStringLiteral("/api/v1/ping?cnonce=aabbcc"));
-
         QCOMPARE(QString::fromStdString(uploadPath("s1", "f2")),
                  QString::fromStdString(std::string(kPathUploadPrefix) + "s1/f2"));
 

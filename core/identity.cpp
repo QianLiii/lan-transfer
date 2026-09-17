@@ -1,9 +1,10 @@
 #include "identity.h"
 
+#include "files/atomicwrite.h"
+
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
-#include <QSaveFile>
 #include <QStandardPaths>
 
 #include <openssl/bn.h>
@@ -99,26 +100,6 @@ bool certificateMatchesKey(const QSslCertificate &certificate, EVP_PKEY *key)
     if (!parsed)
         return false;
     return X509_check_private_key(parsed.get(), key) == 1;
-}
-
-// 原子写入：先写临时文件再改名。中途崩溃不会留下半截文件，
-// 否则下次启动只会看到「无法解析」这类只能靠删文件恢复的状态。
-bool writeFileAtomically(const QString &path, const QByteArray &data, QString *error)
-{
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        *error = QStringLiteral("无法写入 %1：%2").arg(path, file.errorString());
-        return false;
-    }
-    if (file.write(data) != data.size()) {
-        *error = QStringLiteral("写入 %1 不完整").arg(path);
-        return false;
-    }
-    if (!file.commit()) {
-        *error = QStringLiteral("提交 %1 失败：%2").arg(path, file.errorString());
-        return false;
-    }
-    return true;
 }
 
 // EC P-256。选 EC 而不是 RSA：更小更快，而两端都是我们自己的实现，

@@ -5,6 +5,7 @@
 #include "random.h"
 #include "sas.h"
 
+#include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -12,7 +13,8 @@
 
 namespace lanpipe::transfer {
 
-PingClient::PingClient(QObject *parent) : QObject(parent), m_manager(new QNetworkAccessManager(this))
+PingClient::PingClient(trust::TrustStore &trust, QObject *parent)
+    : QObject(parent), m_manager(new QNetworkAccessManager(this)), m_trust(trust)
 {
     qRegisterMetaType<PingClient::Result>();
 
@@ -21,26 +23,29 @@ PingClient::PingClient(QObject *parent) : QObject(parent), m_manager(new QNetwor
     m_manager->setRedirectPolicy(QNetworkRequest::ManualRedirectPolicy);
 }
 
-void PingClient::start(const QUrl &url, const Identity &identity,
+void PingClient::start(const QUrl &url, const Identity &identity, const QString &name,
                        std::optional<Fingerprint> expected)
 {
     m_identity = identity;
     m_expected = std::move(expected);
     m_peerFingerprint = {};
+    m_code = {};
     m_handshakeError.clear();
     m_reported = false;
     m_cnonce = randomHex(proto::kNonceBytes);
 
     QUrl target = url;
     target.setPath(QString::fromLatin1(proto::kPathPing.data(), proto::kPathPing.size()));
-    target.setQuery(QStringLiteral("cnonce=%1").arg(m_cnonce));
 
     QNetworkRequest request(target);
     // 两端用同一份 mTLS 配置：出示自己的证书，也要求看到对方的证书（§4）。
     request.setSslConfiguration(net::mtlsConfiguration(identity));
     request.setTransferTimeout(proto::kSenderHttpTimeout);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
-    QNetworkReply *reply = m_manager->get(request);
+    QNetworkReply *reply =
+        m_manager->post(request, QJsonDocument(toJson(PingRequest{m_cnonce, name}))
+                                     .toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::sslErrors, this,
             [this, reply](const QList<QSslError> &errors) { onSslErrors(reply, errors); });
     connect(reply, &QNetworkReply::finished, this, [this, reply] { onFinished(reply); });
@@ -60,7 +65,23 @@ bool PingClient::adoptPeer(const QSslCertificate &certificate)
         return false;
     }
 
+    // 信任库里记的指纹与这次看到的不符。注意 deviceId 本身就是指纹的截断，
+    // 所以这条只在截断前缀相同、后面不同时才可能触发——它是一道廉价的兜底，
+    // 不是「设备换了密钥」的检测（那种情况会表现为一个全新的、未配对的 deviceId）。
+    const QString deviceId = deviceIdFrom(*fingerprint);
+    if (m_trust.identityChanged(deviceId, fingerprint->toHex())) {
+        m_handshakeError =
+            QStringLiteral("已配对设备的指纹与记录不符（%1）：请删除配对后重新配对")
+                .arg(deviceId.left(8));
+        return false;
+    }
+
     m_peerFingerprint = *fingerprint;
+    // 输入只有两个指纹与 cnonce，所以这一刻就能算出全部 12 位并显示本端那半，
+    // 不必等响应（§4 配对：接收方在响应之前就要看到它）。
+    m_code = sasCode(SasRole::Sender,
+                     computeSas(m_identity.fingerprint(), m_peerFingerprint, m_cnonce));
+    emit peerAdopted(m_code);
     return true;
 }
 
@@ -95,8 +116,17 @@ void PingClient::onFinished(QNetworkReply *reply)
         return;
     }
 
-    if (reply->error() != QNetworkReply::NoError) {
-        result.error = QStringLiteral("请求失败：%1").arg(reply->errorString());
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray body = reply->readAll();
+
+    // 先看 HTTP 状态，再看 QNAM 的网络错误：4xx/5xx 同时会把 reply->error() 置成
+    // 对应的分类错误，若先看后者，对端给的那句可读原因就被 "Conflict" 这类词盖掉了。
+    if (status != 200 || reply->error() != QNetworkReply::NoError) {
+        result.error = status > 0
+            ? QStringLiteral("对端返回 %1：%2")
+                  .arg(status)
+                  .arg(QString::fromUtf8(body).trimmed())
+            : QStringLiteral("请求失败：%1").arg(reply->errorString());
         report(result);
         return;
     }
@@ -105,15 +135,6 @@ void PingClient::onFinished(QNetworkReply *reply)
     if (!m_peerFingerprint.isValid()
         && !adoptPeer(reply->sslConfiguration().peerCertificate())) {
         result.error = m_handshakeError;
-        report(result);
-        return;
-    }
-
-    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QByteArray body = reply->readAll();
-    if (status != 200) {
-        result.error =
-            QStringLiteral("对端返回 %1：%2").arg(status).arg(QString::fromUtf8(body).trimmed());
         report(result);
         return;
     }
@@ -138,10 +159,8 @@ void PingClient::onFinished(QNetworkReply *reply)
     result.info = *info;
     result.peerFingerprint = m_peerFingerprint;
     // 发送方指纹在前、接收方指纹在后（§4）。两个都取自本次握手。
-    // 发送方取前半显示、要求输入后半。
-    result.code = sasCode(SasRole::Sender,
-                          computeSas(m_identity.fingerprint(), m_peerFingerprint, m_cnonce,
-                                     info->snonce));
+    // 发送方取前半显示、要求输入后半——这一半在 peerAdopted 时就已经显示出去了。
+    result.code = m_code;
     report(result);
 }
 

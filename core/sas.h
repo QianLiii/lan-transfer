@@ -2,21 +2,29 @@
 
 // SAS：两端各自算出、由用户比对的 12 位数字（§4 配对），拆成两半使用。
 //
-// 它不需要保密，只需要**不相等**。因此输入被刻意限制在两个来源：
+// 它不需要保密，只需要**不相等**。输入只有三项，两个指纹 + 一个 nonce：
 //
 //   - 两个指纹都取自各自在 TLS 握手里亲眼看到的证书，不取 TXT 的提示值，
 //     也不取 /ping 响应里的 JSON 字段；
-//   - cnonce 由发送方出，snonce 由接收方出，两个都走这条已握手的连接。
+//   - cnonce 由发送方出，随 ping 请求交给接收方。
 //
 // 中间人必须分别与两端各建一条 TLS 连接、各出示一次自己的证书，于是两端算出的
-// 输入必然不同，12 位数字也必然不同。
+// 输入必然不同（差在两个真实指纹上），12 位数字也必然不同。
+//
+// 为什么只有一个 nonce。曾经是两端各出一个，但那样**发送方在收到响应之前算不出
+// 任何一半**，而接收方要输入的是发送方显示的那半——「接收方等发送方显示、发送方等
+// 接收方响应、接收方又等自己的用户输入」形成死锁。去掉它之后，两端在请求发出前后
+// 就能各自算出全部 12 位，一个往返内完成比对，接收方的结论还能随响应回去。
+//
+// 安全性不变：让两端不同的那个量是 `fp_A` 与 `fp_B`，nonce 不含其中；中间人本来
+// 就控制转发路径上的 nonce（它可自由替换 cnonce），穷举成本仍是 10^12。
 //
 // —————————————— 为什么要拆成两半 ——————————————
 //
-// 中间人全程接管信道，四个输入它全知道，因此**它算得出两端各自的码**。它还能
-// 自由替换两个 nonce（cnonce 是明文 URL 参数，snonce 是 JSON 字段，两者都没有
-// 任何东西绑定到原始取值），于是在本机穷举 snonce 直到两端的 6 位码相同——
-// 约 10^6 次哈希，毫秒级。用户再认真地比对也挡不住：两个屏幕显示的确实相同。
+// 中间人全程接管信道，全部输入它都知道，因此**它算得出两端各自的码**。它还能
+// 自由替换转发路径上的 cnonce（那是明文 JSON 字段，没有任何东西绑定它的原始取值），
+// 于是在本机穷举 cnonce 直到两端的 6 位码相同——约 10^6 次哈希，毫秒级。
+// 用户再认真地比对也挡不住：两个屏幕显示的确实相同。
 //
 // 拆成两半之后（发送方显示前半、接收方显示后半，各自要求输入对方那一半）：
 //
@@ -35,12 +43,9 @@
 #include "identity.h"
 
 #include <QByteArray>
-#include <QDateTime>
-#include <QHash>
 #include <QMetaType>
 #include <QString>
 
-#include <optional>
 
 namespace lanpipe {
 
@@ -61,40 +66,10 @@ struct SasCode
 
 [[nodiscard]] QByteArray computeSas(const Fingerprint &senderFingerprint,
                                     const Fingerprint &receiverFingerprint,
-                                    const QString &cnonce, const QString &snonce);
+                                    const QString &cnonce);
 
 // 从 SAS 取出本端的两半。输入不是 SAS 的长度时返回两个空串。
 [[nodiscard]] SasCode sasCode(SasRole role, const QByteArray &sas);
-
-// 每个对端一份的 SAS 缓存（§4 规则 3）。
-//
-// 为什么必须缓存：每条连接只处理一个请求（§5.15），prepare 到达的是另一条连接，
-// 那时发送方拿不到接收方的新 snonce。所以码在 /ping 那一刻就定下并缓存，
-// prepare 只读它。若改成在 prepare 时才算，接收方就得先产出 snonce 才能显示码，
-// 而用户必须在回答 prepare 之前看到码——闭环，死锁。
-class SasCache
-{
-public:
-    struct Entry
-    {
-        SasCode code; // 接收方那一侧的两半：先显示 shown，稍后要求输入 asked
-        Fingerprint peerFingerprint;
-        QDateTime settledAt;
-    };
-
-    void store(const QString &peerDeviceId, Entry entry);
-
-    // 超过 kSasLifetime 的条目视为不存在。
-    [[nodiscard]] std::optional<Entry> lookup(
-        const QString &peerDeviceId,
-        const QDateTime &now = QDateTime::currentDateTimeUtc()) const;
-
-    void clear() { m_entries.clear(); }
-    [[nodiscard]] qsizetype size() const { return m_entries.size(); }
-
-private:
-    QHash<QString, Entry> m_entries;
-};
 
 } // namespace lanpipe
 

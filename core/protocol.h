@@ -77,14 +77,6 @@ inline constexpr std::string_view kPathAbortPrefix    = "/api/v1/abort/";
 
 // 路径构造。集中在此处以免收发两端各拼一次、拼法漂移。
 // 参数必须是十六进制字符串（见文件头约束 2）。
-[[nodiscard]] inline std::string pingPath(std::string_view cnonce)
-{
-    std::string path{kPathPing};
-    path += "?cnonce=";
-    path += cnonce;
-    return path;
-}
-
 [[nodiscard]] inline std::string uploadPath(std::string_view sessionId, std::string_view fileId)
 {
     std::string path{kPathUploadPrefix};
@@ -113,10 +105,17 @@ inline constexpr std::string_view kPathAbortPrefix    = "/api/v1/abort/";
 // 接收方的审批决策窗口。超时后 prepare 返回 504。
 inline constexpr auto kApprovalWindow = std::chrono::seconds(30);
 
-// 发送方的 HTTP 超时，必须显式设置为大于 kApprovalWindow。
-// 切勿使用 QNetworkRequest::setTransferTimeout() 的无参形式——它取默认值
-// 30000 ms，会与接收方的决策窗口精确竞争（§5.9）。
-inline constexpr auto kSenderHttpTimeout = std::chrono::seconds(45);
+// 等用户输入配对码的上限，两端各自适用：发送方在本机等自己的用户，
+// 接收方在 /ping 的处理里等自己的用户。
+//
+// 两端都要有界，因为比对发生在 ping 那一刻，任何一端的人不来，这次配对就不成立。
+inline constexpr auto kSasInputWindow = std::chrono::minutes(2);
+
+// 发送方的 HTTP 超时。必须显式设置，且必须大于所等待的那一侧的窗口——
+// 现在最长的一环是接收方等它自己的用户输入配对码（kSasInputWindow）。
+// 切勿使用 QNetworkRequest::setTransferTimeout() 的无参形式：它取默认值
+// 30000 ms，会与接收方的审批窗口精确竞争（§5.9）。
+inline constexpr auto kSenderHttpTimeout = std::chrono::minutes(3);
 
 // 传输停滞判定：上传阶段「零进度」持续这么久即判定连接已死，双向适用（§5.8）。
 // 只在上传阶段计时——prepare 等待审批期间没有字节流动，用同一个值会误杀审批中的会话。
@@ -124,16 +123,12 @@ inline constexpr auto kStallTimeout = std::chrono::seconds(30);
 
 // —————————————————————— 配对（§4）——————————————————————
 
-// nonce 的字节数（cnonce 与 snonce）。16 字节足够，且让 URL 保持短。
+// cnonce 的字节数。16 字节足够，也让请求体保持短。
 inline constexpr int kNonceBytes = 16;
 
 // SAS 每一半的位数。两端各显示一半、各要求输入另一半，合计 12 位（§4 配对）——
 // 拆成两半是为了让中间人无法只磨出 6 位就能通过。
 inline constexpr int kSasCodeDigits = 6;
-
-// SAS 缓存的寿命。发送方每次 prepare 前都会重新 ping，所以这个值只需覆盖
-// 「ping 到接收方在审批框里显示同一个码」这段时间（§4 规则 3）。
-inline constexpr auto kSasLifetime = std::chrono::minutes(5);
 
 // —————————————————————— 传输参数与本地布局（§5.1、§5.7）——————————————————
 
@@ -151,6 +146,9 @@ inline constexpr auto kTempRetention = std::chrono::hours(24);
 inline constexpr std::size_t kMaxActiveSessions = 1;
 
 // —————————————————————— 解析器上限（§5.15）——————————————————————
+
+// /ping 请求体的上限。实际载荷约 400 字节（cnonce + 设备名），留足余量。
+inline constexpr std::size_t kMaxPingBodySize = 4 * 1024;
 
 // 解析器是封闭子集：只接受 Content-Length 分帧，任何 Transfer-Encoding、
 // 重复 Content-Length、超限的 header 块一律 400 并断连，请求体一个字节都不读。
