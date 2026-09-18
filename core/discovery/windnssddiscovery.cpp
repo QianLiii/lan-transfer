@@ -169,11 +169,14 @@ void WinDnsSdDiscovery::registerService()
         valuePointers.push_back(value.c_str());
 
     // 地址传 nullptr：由系统按本机实际接口决定，这正是我们要的。
+    //
+    // keys / values 的形参是 PCWSTR *（指向常量的指针），不是 PWSTR *：
+    // T ** → const T ** 不能隐式转换，所以这里必须原样传 PCWSTR *，
+    // 用 const_cast<PWSTR *> 反而编不过。
     m_registeredInstance = DnsServiceConstructInstance(
         m_wideName.front().data(), m_wideHost.front().data(), nullptr, nullptr,
         m_config.self.port, 0 /* priority */, 0 /* weight */,
-        static_cast<DWORD>(keyPointers.size()), const_cast<PWSTR *>(keyPointers.data()),
-        const_cast<PWSTR *>(valuePointers.data()));
+        static_cast<DWORD>(keyPointers.size()), keyPointers.data(), valuePointers.data());
 
     if (m_registeredInstance == nullptr) {
         fail(QStringLiteral("构造 DNS-SD 服务实例失败"));

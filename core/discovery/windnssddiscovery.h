@@ -47,6 +47,14 @@
 #include <windows.h>
 #include <windns.h>
 
+// DnsServiceRegister / DnsServiceBrowse 成功时返回的是「请求已排队」，
+// 不是 ERROR_SUCCESS。微软文档点名的这个常量在 SDK 的 windns.h 里，
+// 但 MinGW 与 Wine 的镜像头里都没有——缺的时候自己补上（9506 取自微软文档
+// 与 Go 的 syscall 表，两处一致）。
+#ifndef DNS_REQUEST_PENDING
+#  define DNS_REQUEST_PENDING 9506
+#endif
+
 #include "discovery.h"
 #include "protocol.h"
 
