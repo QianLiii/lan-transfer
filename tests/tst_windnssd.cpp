@@ -9,8 +9,6 @@
 
 #include <QSignalSpy>
 
-#include <cstdio>
-
 #include "protocol.h"
 
 #ifdef LANPIPE_HAVE_WINDNSSD
@@ -21,20 +19,6 @@ using namespace lanpipe;
 using namespace lanpipe::discovery;
 
 namespace {
-
-// CI 的 job 日志要鉴权才能下载，注解不需要。把失败原因按 GitHub 的注解格式
-// 直接打到 stdout，它就会被渲染成注解——这是 Windows 上唯一能看到的失败现场。
-//
-// 与 ctest 的输出顺序无关，也与日志截取无关：这是发射端在说话，不是去捞日志。
-void annotate(const QString &title, const QString &text)
-{
-    QByteArray line = "::error title=" + title.toUtf8() + "::";
-    line += text.toUtf8();
-    line.replace("\n", " ");
-    line += '\n';
-    std::fwrite(line.constData(), 1, static_cast<size_t>(line.size()), stdout);
-    std::fflush(stdout);
-}
 
 // 指定初始化漏字段会触发 -Wmissing-field-initializers，所以配置这样拼。
 WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
@@ -76,17 +60,11 @@ private slots:
         QSignalSpy found(&browser, &WinDnsSdDiscovery::announced);
 
         announcer.start();
-        if (!announcer.lastError().isEmpty()) {
-            annotate(QStringLiteral("tst_windnssd/注册启动"),
-                     QStringLiteral("注册方启动失败：%1").arg(announcer.lastError()));
+        if (!announcer.lastError().isEmpty())
             QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(announcer.lastError())));
-        }
         browser.start();
-        if (!browser.lastError().isEmpty()) {
-            annotate(QStringLiteral("tst_windnssd/浏览启动"),
-                     QStringLiteral("浏览方启动失败：%1").arg(browser.lastError()));
-        }
-        QVERIFY2(browser.lastError().isEmpty(), qPrintable(browser.lastError()));
+        QVERIFY2(browser.lastError().isEmpty(),
+                 qPrintable(QStringLiteral("浏览方启动失败：%1").arg(browser.lastError())));
 
         // 系统解析要走一次 mDNS 往返，比 Avahi 那条 D-Bus 路慢一些。
         QTRY_VERIFY_WITH_TIMEOUT(found.count() > 0, 15000);
@@ -112,8 +90,6 @@ private slots:
                      browser.lastError().isEmpty() ? QStringLiteral("（空）")
                                                    : browser.lastError(),
                      QString::number(found.count()));
-        if (!matched)
-            annotate(QStringLiteral("tst_windnssd"), diagnosis);
         QVERIFY2(matched, qPrintable(diagnosis));
     }
 
@@ -143,11 +119,8 @@ private slots:
                                       QStringLiteral("只要浏览"), 0),
                       false));
         browser.start();
-        if (!browser.lastError().isEmpty()) {
-            annotate(QStringLiteral("tst_windnssd/只浏览"),
-                     QStringLiteral("只浏览模式启动失败：lastError=%1").arg(browser.lastError()));
-        }
-        QVERIFY2(browser.lastError().isEmpty(), qPrintable(browser.lastError()));
+        QVERIFY2(browser.lastError().isEmpty(),
+                 qPrintable(QStringLiteral("只浏览模式启动失败：%1").arg(browser.lastError())));
     }
 };
 
