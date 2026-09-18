@@ -135,6 +135,17 @@ jobs:
       - name: 测试
         run: ctest --preset ci
 
+      # ctest 只在失败时打印子进程输出，跳过的用例连一行都不打——CI 里只剩
+      # ***Skipped，看不出为什么。原因与进度标记都在 LastTest.log 里，这里捞一遍。
+      # `|| true` 不能省：GitHub 的 bash 步骤是 set -e，grep 无匹配会返回 1。
+      - name: 打印测试留下的标记与跳过原因
+        if: always()
+        shell: bash
+        run: |
+          log=build/ci/Testing/Temporary/LastTest.log
+          [ -f "$log" ] || exit 0
+          grep -hE '\[tst_|SKIP!' "$log" || true
+
       # M0 的第三条验收：CLI 可 headless 运行。
       # 用 bash 是为了三个平台共用一条命令（Windows 上是 Git Bash）。
       - name: CLI 冒烟测试

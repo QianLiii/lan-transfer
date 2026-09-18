@@ -86,6 +86,8 @@ private slots:
         announcer.start();
         if (!announcer.lastError().isEmpty()) {
             g_skipped = true;
+            mark(QStringLiteral("skipping: registration failed to start: %1")
+                     .arg(announcer.lastError()));
             QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
                                  .arg(announcer.lastError())));
         }
@@ -143,6 +145,9 @@ private slots:
         // 这条往返只在能真正做 mDNS 的机器上才有意义（本机 Windows 上跑它才是验收）。
         if (!matched && browser.recordsSeen() == 0) {
             g_skipped = true;
+            mark(QStringLiteral("skipping: browse callbacks=%1, records=0, announcements=0 — "
+                                "this machine's DNS-SD stack resolved nothing")
+                     .arg(browser.browseCallbacks()));
             QSKIP(qPrintable(QStringLiteral(
                 "this machine's DNS-SD stack returned no records at all; skip rather than "
                 "report a false failure. browse callbacks=%1")
@@ -162,6 +167,7 @@ private slots:
         self.start();
         if (!self.lastError().isEmpty()) {
             g_skipped = true;
+            mark(QStringLiteral("skipping: registration failed to start: %1").arg(self.lastError()));
             QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
                                  .arg(self.lastError())));
         }
