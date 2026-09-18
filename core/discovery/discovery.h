@@ -9,6 +9,7 @@
 // 三个来源的地位不同（§3.6）：系统 DNS-SD 是主路径，UDP 广播是兜底，
 // 手动 IP:port 是最后一招。它们都产出同一个 Announcement。
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QHostAddress>
 #include <QMetaType>
@@ -40,6 +41,20 @@ struct Announcement
     QDateTime seenAt;
 };
 
+// §3.2：单条 TXT 串上限 255 字节，超长按 UTF-8 边界截断（不截出半个字符）。
+// 广播载荷与 DNS-SD 的 TXT 用的是同一组字段，所以共用这一个上限。
+[[nodiscard]] inline QByteArray txtTruncated(const QString &text, int maxBytes = 255)
+{
+    const QByteArray utf8 = text.toUtf8();
+    if (utf8.size() <= maxBytes)
+        return utf8;
+
+    int end = maxBytes;
+    while (end > 0 && (static_cast<unsigned char>(utf8.at(end)) & 0xC0) == 0x80)
+        --end;
+    return utf8.left(end);
+}
+
 class Discovery : public QObject
 {
     Q_OBJECT
@@ -56,6 +71,9 @@ public:
 
     // 后端名，进日志与诊断导出（§3.6）。
     [[nodiscard]] virtual QString backendName() const = 0;
+
+    // 最近一次失败的原因，成功时为空。§3.6 要求三种失败能分开，靠的就是它。
+    [[nodiscard]] virtual QString lastError() const = 0;
 
 signals:
     // 每听到一次就发一次，同一个对端会重复出现——去重在 PeerDirectory。

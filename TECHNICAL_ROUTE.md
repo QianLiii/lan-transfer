@@ -207,7 +207,10 @@ a platform shim.
      advertise. Neither needs the multicast entitlement (only *arbitrary* service types and
      browsing *all* types do).
    - Windows 10 1809+: `Windows.Networking.ServiceDiscovery.Dnssd`.
-   - Linux: Avahi (package it in the AppImage, or fall back to broadcast).
+   - Linux: Avahi, **implemented** — over its D-Bus interface via QtDBus rather than by
+     linking `libavahi-client`. Fewer build and packaging dependencies, and the failure mode is
+     identical: both need `avahi-daemon` running. If the daemon is absent the backend reports it
+     and the sender/receiver fall back to UDP broadcast.
    - Android: `NsdManager`, which does both registration and discovery, via
      `registerServiceInfoCallback` (`resolveService` is deprecated since API 34).
 
@@ -255,6 +258,11 @@ a platform shim.
    one costs 30–75 s in TCP SYN retries. Store the set with a `lastSeen` timestamp, try addresses
    in order with a short per-address connect timeout (≈3 s), and only when all fail fall back to
    re-querying DNS-SD, then broadcast, then manual entry.
+
+   A DNS-SD browse result is a *stable list*, not a periodic announcement: Avahi reports a service
+   once when it appears and once when it disappears. So that backend re-reports every live entry on
+   a refresh timer (`kPeerRefreshInterval`), which makes the directory's rule — "not heard for
+   `kPeerExpiry` means gone" — mean the same thing for both backends.
 
 4. Fallback: UDP broadcast on a fixed port (e.g. 53001) every 2 s with jitter, payload carrying
    the same fields as the TXT set plus the port. Bind with `SO_REUSEADDR` so two instances can
@@ -619,7 +627,8 @@ lanpipe/
 │  ├─ identity.{h,cpp}        # keypair, cert, SPKI fingerprint, keystore
 │  ├─ discovery/
 │  │  ├─ discovery.h          # interface
-│  │  ├─ dnssddiscovery.{h,cpp}      # system DNS-SD backend
+│  │  ├─ avahidiscovery.{h,cpp}      # Linux: Avahi over D-Bus (system DNS-SD)
+│  │  ├─ dnssddiscovery.{h,cpp}      # Windows: Dnssd; macOS: Network.framework (pending)
 │  │  ├─ mdnsdiscovery.{h,cpp}       # mjansson fallback
 │  │  ├─ broadcastdiscovery.{h,cpp}
 │  │  ├─ peerdirectory.{h,cpp}       # peers hold address sets

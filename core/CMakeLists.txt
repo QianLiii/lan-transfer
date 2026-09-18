@@ -53,6 +53,22 @@ target_include_directories(lanpipe_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# Linux 上的系统 DNS-SD 后端走 Avahi 的 D-Bus 接口（§3.6）。只有找得到 QtDBus
+# 才编它——CI 的 Qt 若不带 DBus 模块，configure 不该因此失败。
+if(UNIX AND NOT APPLE)
+    find_package(Qt6 QUIET COMPONENTS DBus)
+    if(Qt6DBus_FOUND)
+        target_sources(lanpipe_core PRIVATE
+            discovery/avahidiscovery.h
+            discovery/avahidiscovery.cpp
+        )
+        target_link_libraries(lanpipe_core PUBLIC Qt6::DBus)
+        target_compile_definitions(lanpipe_core PUBLIC LANPIPE_HAVE_AVAHI)
+    else()
+        message(STATUS "未找到 Qt6::DBus，Linux 的 Avahi 后端不参与构建")
+    endif()
+endif()
+
 target_link_libraries(lanpipe_core
     PUBLIC
         Qt6::Core

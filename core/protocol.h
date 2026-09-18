@@ -60,6 +60,11 @@ inline constexpr auto kBroadcastJitter = std::chrono::milliseconds(500);
 // 这个值容许连丢四次。
 inline constexpr auto kPeerExpiry = std::chrono::seconds(10);
 
+// 一个后端把「这个对端还在」重新报一次的间隔。DNS-SD 的浏览结果是稳定列表，
+// 不像广播那样每 2 秒自己响一次，所以由后端按这个间隔重发——只有这样，
+// PeerDirectory 的超时判定对两种后端才是同一套。
+inline constexpr auto kPeerRefreshInterval = std::chrono::seconds(2);
+
 // 端口 0 表示由系统分配临时端口，端口号经 SRV 与广播载荷通告（§3.1）。
 inline constexpr std::uint16_t kEphemeralPort = 0;
 

@@ -73,7 +73,7 @@ public:
     [[nodiscard]] quint16 boundPort() const;
 
     // 最近一次发送或绑定的失败原因，供诊断导出（§3.6）。成功时为空。
-    [[nodiscard]] QString lastError() const { return m_lastError; }
+    [[nodiscard]] QString lastError() const override { return m_lastError; }
 
     // 本次通告实际会发往的地址。诊断用，也是「广播到底出去了没有」的唯一直接证据。
     [[nodiscard]] QList<QHostAddress> currentTargets() const { return targets(); }

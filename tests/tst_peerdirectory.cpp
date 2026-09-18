@@ -23,6 +23,7 @@ public:
     void start() override { }
     void stop() override { }
     [[nodiscard]] QString backendName() const override { return QStringLiteral("fake"); }
+    [[nodiscard]] QString lastError() const override { return {}; }
 
     void announce(const QString &deviceId, const QString &name, const QHostAddress &address,
                   quint16 port, const QDateTime &seenAt)

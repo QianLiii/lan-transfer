@@ -6,6 +6,7 @@
 // 它的第二个身份是 CI 工具：M1–M4 的验收全部靠它驱动，因此必须有
 // 非交互路径（--yes / --pin），否则配对流程需要人工比对 6 位码就无法自动化。
 
+#include "discovery/avahidiscovery.h"
 #include "discovery/broadcastdiscovery.h"
 #include "discovery/peerconnector.h"
 #include "discovery/peerdirectory.h"
@@ -29,6 +30,7 @@
 #include <QUrl>
 
 #include <cstdio>
+#include <memory>
 #include <optional>
 
 #ifdef Q_OS_WIN
@@ -168,6 +170,35 @@ std::optional<lanpipe::Identity> loadIdentity()
     return *identity;
 }
 
+// 发现后端：系统 DNS-SD 优先，取不到就退回 UDP 广播（§3.6）。
+// 返回已经 start() 过的后端；广播那条路的失败原因由调用方读 lastError()。
+std::unique_ptr<lanpipe::discovery::Discovery> startDiscovery(
+    bool announce, const lanpipe::discovery::Advertisement &self)
+{
+    using namespace lanpipe;
+
+#ifdef LANPIPE_HAVE_AVAHI
+    if (discovery::AvahiDiscovery::isAvailable()) {
+        discovery::AvahiDiscovery::Config config;
+        config.self = self;
+        config.announce = announce;
+        auto backend = std::make_unique<discovery::AvahiDiscovery>(config);
+        backend->start();
+        if (backend->lastError().isEmpty())
+            return backend;
+        writeStderr(QStringLiteral("Avahi 不可用（%1），改用 UDP 广播")
+                        .arg(backend->lastError()));
+    }
+#endif
+
+    discovery::BroadcastDiscovery::Config config;
+    config.self = self;
+    config.announce = announce;
+    auto backend = std::make_unique<discovery::BroadcastDiscovery>(config);
+    backend->start();
+    return backend;
+}
+
 // 设备名。Settings 为空时回退到主机名并落盘——这个名字会广播到局域网（§3.2），
 // GUI 上会让用户确认一次；CLI 用主机名足够，但必须有个名字，否则接收方的用户是在
 // 为一条没有名字的连接输入配对码。
@@ -258,16 +289,19 @@ int runServe(const Options &options)
         return kExitFailure;
     }
 
-    // 发现只在服务起来之后启动：广播里通告的必须是实际监听的那个端口（§3.1）。
+    // 发现只在服务起来之后启动：通告里必须是实际监听的那个端口（§3.1）。
     discovery::PeerDirectory directory;
-    discovery::BroadcastDiscovery::Config broadcastConfig;
-    broadcastConfig.self.deviceId = identity->deviceId();
-    broadcastConfig.self.name = settings.deviceName();
-    broadcastConfig.self.fingerprint = identity->fingerprint().toHex();
-    broadcastConfig.self.version = proto::kVersion;
-    broadcastConfig.self.port = *port;
-    discovery::BroadcastDiscovery broadcast(broadcastConfig);
-    directory.addSource(&broadcast);
+    discovery::Advertisement self;
+    self.deviceId = identity->deviceId();
+    self.name = settings.deviceName();
+    self.fingerprint = identity->fingerprint().toHex();
+    self.version = proto::kVersion;
+    self.port = *port;
+    const std::unique_ptr<discovery::Discovery> discover = startDiscovery(true, self);
+    if (!discover->lastError().isEmpty())
+        writeStderr(QStringLiteral("%1 后端不可用：%2")
+                        .arg(discover->backendName(), discover->lastError()));
+    directory.addSource(discover.get());
     QObject::connect(&directory, &discovery::PeerDirectory::peerAdded,
                      [](const QString &deviceId) {
                          writeStdout(QStringLiteral("发现 %1").arg(deviceId.left(8)));
@@ -276,10 +310,6 @@ int runServe(const Options &options)
                      [](const QString &deviceId) {
                          writeStdout(QStringLiteral("掉线 %1").arg(deviceId.left(8)));
                      });
-    broadcast.start();
-    if (!broadcast.lastError().isEmpty())
-        writeStderr(QStringLiteral("广播发现不可用：%1").arg(broadcast.lastError()));
-
     printIdentity(*identity);
     writeStdout(QStringLiteral("正在监听 %1，协议版本 %2").arg(*port).arg(proto::kVersion));
     return QCoreApplication::exec();
@@ -374,10 +404,13 @@ int runPair(const Options &options)
 
     // 逐地址尝试用到的状态。runPair 要一直活到 exec() 返回，所以这些都能是局部量。
     discovery::PeerDirectory directory;
-    discovery::BroadcastDiscovery::Config browseConfig;
-    browseConfig.self.deviceId = identity->deviceId();
-    browseConfig.announce = false; // 只找人不被找：发送方没有在监听
-    discovery::BroadcastDiscovery browse(browseConfig);
+    discovery::Advertisement browseSelf;
+    browseSelf.deviceId = identity->deviceId();
+    browseSelf.name = settings.deviceName();
+    browseSelf.fingerprint = identity->fingerprint().toHex();
+    browseSelf.version = proto::kVersion;
+    // 只找人不被找：发送方没有在监听，注册出去只会让别人连到一个不存在的端口。
+    const std::unique_ptr<discovery::Discovery> discover = startDiscovery(false, browseSelf);
     std::optional<discovery::PeerConnector> connector;
     bool answered = false; // peerAdopted 是否已经发生过：决定失败后是换地址还是停下
 
@@ -523,10 +556,11 @@ int runPair(const Options &options)
     constexpr auto kLookupTimeout = std::chrono::seconds(10);
     writeStdout(QStringLiteral("正在查找 deviceId 以 %1 开头的设备…").arg(target->deviceIdPrefix));
 
-    directory.addSource(&browse);
-    browse.start();
-    if (!browse.lastError().isEmpty())
-        writeStderr(QStringLiteral("广播发现不可用：%1").arg(browse.lastError()));
+    directory.addSource(discover.get());
+    if (discover->lastError().isEmpty())
+        writeStdout(QStringLiteral("发现后端：%1").arg(discover->backendName()));
+    else
+        writeStderr(QStringLiteral("发现不可用：%1").arg(discover->lastError()));
 
     // 已经在广播里的对端可能在我们开始听之前就报过到了——不会，但开始听之后
     // 第一条通告要等下一个周期，所以先扫一遍现有列表。
