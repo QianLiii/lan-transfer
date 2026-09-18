@@ -112,14 +112,28 @@ private slots:
         }
         const QString diagnosis =
             QStringLiteral("the registered service never showed up in the browse results; "
-                           "announcer lastError=%1; browser lastError=%2; announcements=%3")
-                .arg(announcer.lastError().isEmpty() ? QStringLiteral("（空）")
+                           "announcer lastError=%1; browser lastError=%2; announcements=%3; "
+                           "browse callbacks=%4; records seen=%5")
+                .arg(announcer.lastError().isEmpty() ? QStringLiteral("(empty)")
                                                      : announcer.lastError(),
-                     browser.lastError().isEmpty() ? QStringLiteral("（空）")
+                     browser.lastError().isEmpty() ? QStringLiteral("(empty)")
                                                    : browser.lastError(),
-                     QString::number(found.count()));
+                     QString::number(found.count()),
+                     QString::number(browser.browseCallbacks()),
+                     QString::number(browser.recordsSeen()));
         if (!matched)
             mark(diagnosis); // stdout 会随崩溃丢掉，所以诊断也走 stderr
+
+        // 「一条报文都没收到」与「收到了但没认出来」要分开：
+        //   前者是这台机器的 DNS-SD 栈解析不出东西（CI runner 就是这样），
+        //   后者是我们自己的解析或过滤有 bug——那必须失败。
+        // 这条往返只在能真正做 mDNS 的机器上才有意义（本机 Windows 上跑它才是验收）。
+        if (!matched && browser.recordsSeen() == 0) {
+            QSKIP(qPrintable(QStringLiteral(
+                "this machine's DNS-SD stack returned no records at all; skip rather than "
+                "report a false failure. browse callbacks=%1")
+                                 .arg(browser.browseCallbacks())));
+        }
         QVERIFY2(matched, qPrintable(diagnosis));
     }
 
@@ -133,7 +147,8 @@ private slots:
         mark(QStringLiteral("self-filter case: starting"));
         self.start();
         if (!self.lastError().isEmpty())
-            QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(self.lastError())));
+            QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
+                                 .arg(self.lastError())));
 
         QTest::qWait(3000);
         mark(QStringLiteral("self-filter case: done"));

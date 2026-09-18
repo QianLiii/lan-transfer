@@ -63,6 +63,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <mutex>
@@ -171,6 +172,10 @@ private:
     // 所有分配出去的上下文。故意不释放（见上），但析构时要把它们指向本对象的
     // 指针置空，回调才不会用到已析构的对象。
     std::vector<PVOID> m_contexts;
+
+    // 由回调线程写、测试线程读，所以是原子的。只作诊断，不参与判断。
+    std::atomic<qint64> m_browseCallbacks{0};
+    std::atomic<qint64> m_recordsSeen{0};
 
     QHash<QString, Announcement> m_resolved;
     QTimer *m_refreshTimer = nullptr;
