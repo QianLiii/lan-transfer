@@ -32,6 +32,16 @@ void mark(const QString &text)
     std::fflush(stderr);
 }
 
+// 把「这条路径没被验证过」写成 GitHub 注解。
+//
+// 理由是 QSKIP 在 ctest 眼里等于「通过」：跳过的用例不留痕迹，CI 全绿，而
+// 系统 DNS-SD 到底能不能用其实没人知道。注解会出现在检查页面上，绕不过去。
+void noteUnverified(const QString &text)
+{
+    std::fprintf(stderr, "::warning title=tst_windnssd::%s\n", qPrintable(text));
+    std::fflush(stderr);
+}
+
 // 指定初始化漏字段会触发 -Wmissing-field-initializers，所以配置这样拼。
 WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
 {
@@ -129,6 +139,12 @@ private slots:
         //   后者是我们自己的解析或过滤有 bug——那必须失败。
         // 这条往返只在能真正做 mDNS 的机器上才有意义（本机 Windows 上跑它才是验收）。
         if (!matched && browser.recordsSeen() == 0) {
+            noteUnverified(QStringLiteral(
+                "system DNS-SD is UNVERIFIED on this machine: %1 browse callback(s), 0 records. "
+                "CI runners resolve nothing over mDNS, so this suite skips instead of reporting "
+                "a false failure. The Win32 DNS-SD path is only verified on a real Windows "
+                "desktop.")
+                               .arg(browser.browseCallbacks()));
             QSKIP(qPrintable(QStringLiteral(
                 "this machine's DNS-SD stack returned no records at all; skip rather than "
                 "report a false failure. browse callbacks=%1")
