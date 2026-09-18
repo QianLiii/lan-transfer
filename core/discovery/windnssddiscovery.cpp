@@ -4,6 +4,7 @@
 #include <QHostAddress>
 #include <QHostInfo>
 #include <QMetaObject>
+#include <QSysInfo>
 #include <QtEndian>
 
 #include <cstring>
@@ -109,6 +110,10 @@ void WinDnsSdDiscovery::postToOwner(PVOID queryContext,
 
 void WinDnsSdDiscovery::fail(const QString &reason)
 {
+    // 必须当场打出来，不能只塞进 lastError：这个后端的失败多半发生在回调线程里
+    // 或 start() 返回之后，调用方那时早已不看了。stderr 是无缓冲的，进程就算随后
+    // 崩掉，这一行也留得下——而 QtTest 的 stdout 带缓冲，崩了就没。
+    qWarning("lanpipe: 系统 DNS-SD 失败：%s", qPrintable(reason));
     m_lastError = reason;
     stop();
 }
@@ -135,7 +140,10 @@ void WinDnsSdDiscovery::start()
 void WinDnsSdDiscovery::registerService()
 {
     // 主机名只有注册才需要，所以在本函数里取——放在 start() 里会让这里看不见它。
-    const QString hostName = QHostInfo::localHostName();
+    //
+    // 用 QSysInfo::machineHostName() 而不是 QHostInfo::localHostName()：后者可能去
+    // 解析一次 DNS，在没有 mDNS 的网络上会卡住几十秒，而我们只是要一个名字。
+    const QString hostName = QSysInfo::machineHostName();
     if (hostName.isEmpty()) {
         fail(QStringLiteral("拿不到本机主机名，无法注册 DNS-SD 服务"));
         return;
@@ -271,6 +279,10 @@ VOID WINAPI WinDnsSdDiscovery::onResolveComplete(DWORD status, PVOID queryContex
                                                  PDNS_SERVICE_INSTANCE instance)
 {
     if (status != ERROR_SUCCESS || instance == nullptr) {
+        // 服务在我们解析之前消失是常态，不当作错误；但留一条 debug 便于排查
+        // 「为什么一直收不到通告」。
+        qDebug("lanpipe: 解析 DNS-SD 实例失败（错误码 %lu）",
+               static_cast<unsigned long>(status));
         if (instance != nullptr)
             DnsServiceFreeInstance(instance);
         return;

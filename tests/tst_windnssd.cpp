@@ -9,6 +9,8 @@
 
 #include <QSignalSpy>
 
+#include <cstdio>
+
 #include "protocol.h"
 
 #ifdef LANPIPE_HAVE_WINDNSSD
@@ -19,6 +21,15 @@ using namespace lanpipe;
 using namespace lanpipe::discovery;
 
 namespace {
+
+// 进度打到 stderr：它无缓冲，进程若在随后崩掉这一行也留得下。QtTest 自己的 stdout
+// 带缓冲，进程一崩就什么都不剩——上一轮 CI 只看到「跑了 54 秒、没有任何输出」，
+// 就是这么来的。有了这些标记，至少知道它死在哪一步。
+void mark(const QString &text)
+{
+    std::fprintf(stderr, "[tst_windnssd] %s\n", qPrintable(text));
+    std::fflush(stderr);
+}
 
 // 指定初始化漏字段会触发 -Wmissing-field-initializers，所以配置这样拼。
 WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
@@ -59,15 +70,20 @@ private slots:
                       false));
         QSignalSpy found(&browser, &WinDnsSdDiscovery::announced);
 
+        mark(QStringLiteral("注册方启动…"));
         announcer.start();
         if (!announcer.lastError().isEmpty())
             QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(announcer.lastError())));
+
+        mark(QStringLiteral("浏览方启动…"));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(),
                  qPrintable(QStringLiteral("浏览方启动失败：%1").arg(browser.lastError())));
 
         // 系统解析要走一次 mDNS 往返，比 Avahi 那条 D-Bus 路慢一些。
+        mark(QStringLiteral("等待通告…"));
         QTRY_VERIFY_WITH_TIMEOUT(found.count() > 0, 15000);
+        mark(QStringLiteral("收到 %1 条通告").arg(found.count()));
 
         bool matched = false;
         for (const QList<QVariant> &emission : found) {
@@ -100,11 +116,13 @@ private slots:
                                       QStringLiteral("自己"), 4456),
                       true));
         QSignalSpy found(&self, &WinDnsSdDiscovery::announced);
+        mark(QStringLiteral("自过滤用例：启动…"));
         self.start();
         if (!self.lastError().isEmpty())
             QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(self.lastError())));
 
         QTest::qWait(3000);
+        mark(QStringLiteral("自过滤用例：结束"));
         for (const QList<QVariant> &emission : found) {
             QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId
                     != QStringLiteral("33333333333333333333333333333333"));
@@ -118,6 +136,7 @@ private slots:
             configFor(advertisementOf(QStringLiteral("66666666666666666666666666666666"),
                                       QStringLiteral("只要浏览"), 0),
                       false));
+        mark(QStringLiteral("只浏览用例：启动…"));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(),
                  qPrintable(QStringLiteral("只浏览模式启动失败：%1").arg(browser.lastError())));
