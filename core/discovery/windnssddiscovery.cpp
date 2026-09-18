@@ -119,12 +119,6 @@ void WinDnsSdDiscovery::start()
         return;
     m_lastError.clear();
 
-    const QString hostName = QHostInfo::localHostName();
-    if (hostName.isEmpty()) {
-        fail(QStringLiteral("拿不到本机主机名，无法注册 DNS-SD 服务"));
-        return;
-    }
-
     m_started = true;
     if (m_config.announce)
         registerService();
@@ -140,6 +134,13 @@ void WinDnsSdDiscovery::start()
 
 void WinDnsSdDiscovery::registerService()
 {
+    // 主机名只有注册才需要，所以在本函数里取——放在 start() 里会让这里看不见它。
+    const QString hostName = QHostInfo::localHostName();
+    if (hostName.isEmpty()) {
+        fail(QStringLiteral("拿不到本机主机名，无法注册 DNS-SD 服务"));
+        return;
+    }
+
     // 实例名要完全限定，主机名要带 .local 后缀。
     m_wideName.assign({(m_config.instanceName + serviceTypeSuffix()).toStdWString()});
     m_wideHost.assign({(hostName + QStringLiteral(".local")).toStdWString()});
