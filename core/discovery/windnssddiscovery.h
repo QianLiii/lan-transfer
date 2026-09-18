@@ -100,6 +100,12 @@ public:
     // start() 之后的 lastError() 报告，调用方据此退回 UDP 广播。
     [[nodiscard]] static bool isAvailable() { return true; }
 
+    // 诊断计数：浏览回调被调用了几次、其中收到过多少条报文。
+    // 用来把「这台机器根本解析不出东西」（环境）与「解析出来了但我们没认出来」
+    // （我们的 bug）分开——两者的处理方式完全不同。
+    [[nodiscard]] qint64 browseCallbacks() const { return m_browseCallbacks.load(); }
+    [[nodiscard]] qint64 recordsSeen() const { return m_recordsSeen.load(); }
+
 private:
     // 回调的上下文。它在最后一次回调回来之前必须一直有效，而 Win32 的 DNS-SD
     // 没有「回调已停止」的回执——取消是异步的。于是它**故意不释放**：每个 start()
