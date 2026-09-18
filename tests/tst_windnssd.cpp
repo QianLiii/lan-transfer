@@ -81,7 +81,18 @@ private slots:
             QVERIFY(!announcement.address.isNull());
             break;
         }
-        QVERIFY2(matched, "没有从浏览结果里拿到注册的那条服务");
+        // 失败时把两个后端的诊断一起说出来——在 Windows 上这是唯一能看到的现场。
+        QVERIFY2(matched,
+                 qPrintable(QStringLiteral("没有从浏览结果里拿到注册的那条服务\n"
+                                           "  注册方 lastError：%1\n"
+                                           "  浏览方 lastError：%2\n"
+                                           "  浏览方收到的通告数：%3")
+                                .arg(announcer.lastError().isEmpty()
+                                         ? QStringLiteral("（空）")
+                                         : announcer.lastError(),
+                                     browser.lastError().isEmpty() ? QStringLiteral("（空）")
+                                                                   : browser.lastError(),
+                                     QString::number(found.count()))));
     }
 
     void instanceDoesNotFindItself()
