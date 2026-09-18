@@ -132,8 +132,23 @@ jobs:
       - name: 构建
         run: cmake --build --preset ci
 
+      # 把 ctest 的输出同时留存一份：下一步在失败时把它写成注解。
+      # set -o pipefail 不能省——否则管道的退出码取自 tee，测试失败会被掩盖。
       - name: 测试
-        run: ctest --preset ci
+        shell: bash
+        run: |
+          set -o pipefail
+          ctest --preset ci 2>&1 | tee ctest.log
+
+      # GitHub 的 job 日志要鉴权才能下载，注解不用。把失败摘要写成注解，
+      # 无凭据的诊断就也能直接看到原因（而不是只知道「exit code 1」）。
+      - name: 测试失败时把摘要写成注解
+        if: failure()
+        shell: bash
+        run: |
+          [ -f ctest.log ] || exit 0
+          body=$(tail -c 3000 ctest.log | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=ctest 失败摘要::$body"
 
       # M0 的第三条验收：CLI 可 headless 运行。
       # 用 bash 是为了三个平台共用一条命令（Windows 上是 Git Bash）。
