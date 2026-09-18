@@ -273,8 +273,11 @@ VOID WINAPI WinDnsSdDiscovery::onBrowseComplete(DWORD status, PVOID queryContext
             ++recordCount;
         names = instanceNamesFrom(records);
     }
-    m_browseCallbacks.fetch_add(1);
-    m_recordsSeen.fetch_add(recordCount);
+    
+    postToOwner(queryContext, [recordCount](WinDnsSdDiscovery *owner) {
+        owner->m_browseCallbacks.fetch_add(1);
+        owner->m_recordsSeen.fetch_add(recordCount);
+    });
 
     // 这行必须在下面的提前返回之前：空名单恰恰是最需要看见的情形。
     qInfo("lanpipe: DNS-SD browse callback: status=%lu records=%d matching=%lld",

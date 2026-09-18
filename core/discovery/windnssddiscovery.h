@@ -123,7 +123,9 @@ private:
 
     // 向对象所在线程投递一件事。**持锁期间投递**：析构会先取同一把锁再把 owner
     // 置空，于是「回调正在使用 owner」与「对象正在析构」不可能同时发生。
-    // 传送的函子只做队列投递，不在锁里调用对象。
+    //
+    // 函子只允许做两件事：队列投递事件，或改原子量。不在锁里调用对象的任何 Qt
+    // 接口——那会把「谁在等谁」变得难以推理。
     static void postToOwner(PVOID queryContext,
                             const std::function<void(WinDnsSdDiscovery *)> &emit);
 
