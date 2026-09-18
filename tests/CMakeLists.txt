@@ -35,3 +35,8 @@ lanpipe_add_test(tst_truststore)
 lanpipe_add_test(tst_broadcast)
 lanpipe_add_test(tst_avahi)
 lanpipe_add_test(tst_windnssd)
+
+# 跳过时以 77 退出，让 ctest 显示 ***Skipped 而不是 Passed。CI runner 的 mDNS
+# 解析不出任何东西，这条往返只能在真机 Windows 上验收——不能让「没验过」看起来
+# 像「验过了」。
+set_tests_properties(tst_windnssd PROPERTIES SKIP_RETURN_CODE 77)

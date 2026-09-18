@@ -7,6 +7,7 @@
 
 #include <QtTest>
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QSignalSpy>
 
@@ -32,15 +33,15 @@ void mark(const QString &text)
     std::fflush(stderr);
 }
 
-// 把「这条路径没被验证过」写成 GitHub 注解。
+// 跳过要能被看见。ctest 只在失败时打印子进程输出，所以测试里打注解没用——
+// 那些行根本进不了 CI 日志。改用退出码：跳过时以 77 退出，与 CMake 里的
+// SKIP_RETURN_CODE 配对，ctest 就会显示 ***Skipped 而不是 Passed。
 //
-// 理由是 QSKIP 在 ctest 眼里等于「通过」：跳过的用例不留痕迹，CI 全绿，而
-// 系统 DNS-SD 到底能不能用其实没人知道。注解会出现在检查页面上，绕不过去。
-void noteUnverified(const QString &text)
-{
-    std::fprintf(stderr, "::warning title=tst_windnssd::%s\n", qPrintable(text));
-    std::fflush(stderr);
-}
+// 否则「系统 DNS-SD 在本机没被验证」这件事在 CI 上毫无痕迹：绿灯，而路径没验过。
+bool g_skipped = false;
+
+// 与 tests/CMakeLists.txt 里的 SKIP_RETURN_CODE 配对。
+constexpr int kSkipExitCode = 77;
 
 // 指定初始化漏字段会触发 -Wmissing-field-initializers，所以配置这样拼。
 WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
@@ -83,9 +84,11 @@ private slots:
 
         mark(QStringLiteral("announcer: starting"));
         announcer.start();
-        if (!announcer.lastError().isEmpty())
+        if (!announcer.lastError().isEmpty()) {
+            g_skipped = true;
             QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
-                                .arg(announcer.lastError())));
+                                 .arg(announcer.lastError())));
+        }
 
         mark(QStringLiteral("browser: starting"));
         browser.start();
@@ -139,12 +142,7 @@ private slots:
         //   后者是我们自己的解析或过滤有 bug——那必须失败。
         // 这条往返只在能真正做 mDNS 的机器上才有意义（本机 Windows 上跑它才是验收）。
         if (!matched && browser.recordsSeen() == 0) {
-            noteUnverified(QStringLiteral(
-                "system DNS-SD is UNVERIFIED on this machine: %1 browse callback(s), 0 records. "
-                "CI runners resolve nothing over mDNS, so this suite skips instead of reporting "
-                "a false failure. The Win32 DNS-SD path is only verified on a real Windows "
-                "desktop.")
-                               .arg(browser.browseCallbacks()));
+            g_skipped = true;
             QSKIP(qPrintable(QStringLiteral(
                 "this machine's DNS-SD stack returned no records at all; skip rather than "
                 "report a false failure. browse callbacks=%1")
@@ -162,9 +160,11 @@ private slots:
         QSignalSpy found(&self, &WinDnsSdDiscovery::announced);
         mark(QStringLiteral("self-filter case: starting"));
         self.start();
-        if (!self.lastError().isEmpty())
+        if (!self.lastError().isEmpty()) {
+            g_skipped = true;
             QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
                                  .arg(self.lastError())));
+        }
 
         QTest::qWait(3000);
         mark(QStringLiteral("self-filter case: done"));
@@ -188,7 +188,13 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(TestWinDnsSd)
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    TestWinDnsSd test;
+    const int failures = QTest::qExec(&test, argc, argv);
+    return (failures == 0 && g_skipped) ? kSkipExitCode : failures;
+}
 
 #else
 
