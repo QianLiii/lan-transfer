@@ -69,6 +69,18 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
+# Windows 的系统 DNS-SD 后端走 Win32 的 DNS-SD API（windns.h，§3.6）：
+# 微软文档把 WinRT 那套（Windows.Networking.ServiceDiscovery.Dnssd）的浏览半边
+# 标为「不受支持、可能变化或不可用」，只剩注册可用。
+if(WIN32)
+    target_sources(lanpipe_core PRIVATE
+        discovery/windnssddiscovery.h
+        discovery/windnssddiscovery.cpp
+    )
+    target_link_libraries(lanpipe_core PUBLIC dnsapi)
+    target_compile_definitions(lanpipe_core PUBLIC LANPIPE_HAVE_WINDNSSD)
+endif()
+
 target_link_libraries(lanpipe_core
     PUBLIC
         Qt6::Core

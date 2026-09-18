@@ -206,7 +206,13 @@ a platform shim.
    - Apple: Network.framework — `NWBrowser` to browse, `NWListener` with `.service` to
      advertise. Neither needs the multicast entitlement (only *arbitrary* service types and
      browsing *all* types do).
-   - Windows 10 1809+: `Windows.Networking.ServiceDiscovery.Dnssd`.
+   - Windows 10 1809+: the **Win32 DNS-SD API** (`windns.h`: `DnsServiceRegister`,
+     `DnsServiceBrowse`, `DnsServiceResolve`), not the WinRT
+     `Windows.Networking.ServiceDiscovery.Dnssd` namespace. Microsoft's own reference marks that
+     namespace's browsing half — `DnssdServiceWatcher`, `DnssdServiceInstanceCollection` — as
+     *unsupported and subject to change or removal*, leaving only registration usable. The Win32
+     functions are supported for desktop apps, need no package identity, and pull in neither
+     C++/WinRT nor `RoInitialize`.
    - Linux: Avahi, **implemented** — over its D-Bus interface via QtDBus rather than by
      linking `libavahi-client`. Fewer build and packaging dependencies, and the failure mode is
      identical: both need `avahi-daemon` running. If the daemon is absent the backend reports it

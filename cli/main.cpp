@@ -20,6 +20,10 @@
 #include "transfer/pingclient.h"
 #include "trust/truststore.h"
 
+#ifdef LANPIPE_HAVE_WINDNSSD
+#  include "discovery/windnssddiscovery.h"
+#endif
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QSysInfo>
@@ -176,6 +180,23 @@ std::unique_ptr<lanpipe::discovery::Discovery> startDiscovery(
     bool announce, const lanpipe::discovery::Advertisement &self)
 {
     using namespace lanpipe;
+
+#ifdef LANPIPE_HAVE_WINDNSSD
+    // Win32 的 DNS-SD 在 Windows 10 1809+ 上总是存在，失败（例如没有可用网络时
+    // DnsServiceBrowse 返回 ERROR_NO_NETWORK）由 start() 后的 lastError 报告，
+    // 随后退回 UDP 广播。
+    {
+        discovery::WinDnsSdDiscovery::Config config;
+        config.self = self;
+        config.announce = announce;
+        auto backend = std::make_unique<discovery::WinDnsSdDiscovery>(config);
+        backend->start();
+        if (backend->lastError().isEmpty())
+            return backend;
+        writeStderr(QStringLiteral("系统 DNS-SD 不可用（%1），改用 UDP 广播")
+                        .arg(backend->lastError()));
+    }
+#endif
 
 #ifdef LANPIPE_HAVE_AVAHI
     if (discovery::AvahiDiscovery::isAvailable()) {
