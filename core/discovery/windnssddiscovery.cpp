@@ -113,7 +113,7 @@ void WinDnsSdDiscovery::fail(const QString &reason)
     // 必须当场打出来，不能只塞进 lastError：这个后端的失败多半发生在回调线程里
     // 或 start() 返回之后，调用方那时早已不看了。stderr 是无缓冲的，进程就算随后
     // 崩掉，这一行也留得下——而 QtTest 的 stdout 带缓冲，崩了就没。
-    qWarning("lanpipe: 系统 DNS-SD 失败：%s", qPrintable(reason));
+    qWarning("lanpipe: system DNS-SD failure: %s", qPrintable(reason));
     m_lastError = reason;
     stop();
 }
@@ -145,7 +145,7 @@ void WinDnsSdDiscovery::registerService()
     // 解析一次 DNS，在没有 mDNS 的网络上会卡住几十秒，而我们只是要一个名字。
     const QString hostName = QSysInfo::machineHostName();
     if (hostName.isEmpty()) {
-        fail(QStringLiteral("拿不到本机主机名，无法注册 DNS-SD 服务"));
+        fail(QStringLiteral("no local host name; cannot register the DNS-SD service"));
         return;
     }
 
@@ -188,7 +188,7 @@ void WinDnsSdDiscovery::registerService()
         static_cast<DWORD>(keyPointers.size()), keyPointers.data(), valuePointers.data());
 
     if (m_registeredInstance == nullptr) {
-        fail(QStringLiteral("构造 DNS-SD 服务实例失败"));
+        fail(QStringLiteral("DnsServiceConstructInstance returned null"));
         return;
     }
 
@@ -203,7 +203,7 @@ void WinDnsSdDiscovery::registerService()
 
     const DWORD result = DnsServiceRegister(&m_registerRequest, nullptr);
     if (result != DNS_REQUEST_PENDING) {
-        fail(QStringLiteral("DnsServiceRegister 失败（错误码 %1）").arg(result));
+        fail(QStringLiteral("DnsServiceRegister failed (error %1)").arg(result));
         return;
     }
     m_registered = true;
@@ -226,7 +226,7 @@ void WinDnsSdDiscovery::browse()
     const DWORD result = DnsServiceBrowse(&request, &m_browseCancel);
     if (result != DNS_REQUEST_PENDING) {
         // 没插网线时这里就是 ERROR_NO_NETWORK（1222）。
-        fail(QStringLiteral("DnsServiceBrowse 失败（错误码 %1）").arg(result));
+        fail(QStringLiteral("DnsServiceBrowse failed (error %1)").arg(result));
         return;
     }
     m_browsing = true;
@@ -251,7 +251,7 @@ VOID WINAPI WinDnsSdDiscovery::onRegisterComplete(DWORD status, PVOID queryConte
         QMetaObject::invokeMethod(
             owner,
             [owner, status] {
-                owner->fail(QStringLiteral("DNS-SD 注册失败（错误码 %1）").arg(status));
+                owner->fail(QStringLiteral("DNS-SD registration failed (error %1)").arg(status));
             },
             Qt::QueuedConnection);
     });
@@ -281,7 +281,7 @@ VOID WINAPI WinDnsSdDiscovery::onResolveComplete(DWORD status, PVOID queryContex
     if (status != ERROR_SUCCESS || instance == nullptr) {
         // 服务在我们解析之前消失是常态，不当作错误；但留一条 debug 便于排查
         // 「为什么一直收不到通告」。
-        qDebug("lanpipe: 解析 DNS-SD 实例失败（错误码 %lu）",
+        qDebug("lanpipe: resolving a DNS-SD instance failed (error %lu)",
                static_cast<unsigned long>(status));
         if (instance != nullptr)
             DnsServiceFreeInstance(instance);

@@ -70,20 +70,21 @@ private slots:
                       false));
         QSignalSpy found(&browser, &WinDnsSdDiscovery::announced);
 
-        mark(QStringLiteral("注册方启动…"));
+        mark(QStringLiteral("announcer: starting"));
         announcer.start();
         if (!announcer.lastError().isEmpty())
-            QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(announcer.lastError())));
+            QSKIP(qPrintable(QStringLiteral("this machine cannot do system DNS-SD: %1")
+                                .arg(announcer.lastError())));
 
-        mark(QStringLiteral("浏览方启动…"));
+        mark(QStringLiteral("browser: starting"));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(),
-                 qPrintable(QStringLiteral("浏览方启动失败：%1").arg(browser.lastError())));
+                 qPrintable(QStringLiteral("the browser failed to start: %1").arg(browser.lastError())));
 
         // 系统解析要走一次 mDNS 往返，比 Avahi 那条 D-Bus 路慢一些。
-        mark(QStringLiteral("等待通告…"));
+        mark(QStringLiteral("waiting for announcements..."));
         QTRY_VERIFY_WITH_TIMEOUT(found.count() > 0, 15000);
-        mark(QStringLiteral("收到 %1 条通告").arg(found.count()));
+        mark(QStringLiteral("got %1 announcement(s)").arg(found.count()));
 
         bool matched = false;
         for (const QList<QVariant> &emission : found) {
@@ -99,8 +100,8 @@ private slots:
             break;
         }
         const QString diagnosis =
-            QStringLiteral("没有从浏览结果里拿到注册的那条服务；注册方 lastError=%1；"
-                           "浏览方 lastError=%2；收到的通告数=%3")
+            QStringLiteral("the registered service never showed up in the browse results; "
+                           "announcer lastError=%1; browser lastError=%2; announcements=%3")
                 .arg(announcer.lastError().isEmpty() ? QStringLiteral("（空）")
                                                      : announcer.lastError(),
                      browser.lastError().isEmpty() ? QStringLiteral("（空）")
@@ -116,13 +117,13 @@ private slots:
                                       QStringLiteral("自己"), 4456),
                       true));
         QSignalSpy found(&self, &WinDnsSdDiscovery::announced);
-        mark(QStringLiteral("自过滤用例：启动…"));
+        mark(QStringLiteral("self-filter case: starting"));
         self.start();
         if (!self.lastError().isEmpty())
             QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(self.lastError())));
 
         QTest::qWait(3000);
-        mark(QStringLiteral("自过滤用例：结束"));
+        mark(QStringLiteral("self-filter case: done"));
         for (const QList<QVariant> &emission : found) {
             QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId
                     != QStringLiteral("33333333333333333333333333333333"));
@@ -136,10 +137,10 @@ private slots:
             configFor(advertisementOf(QStringLiteral("66666666666666666666666666666666"),
                                       QStringLiteral("只要浏览"), 0),
                       false));
-        mark(QStringLiteral("只浏览用例：启动…"));
+        mark(QStringLiteral("browse-only case: starting"));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(),
-                 qPrintable(QStringLiteral("只浏览模式启动失败：%1").arg(browser.lastError())));
+                 qPrintable(QStringLiteral("browse-only mode failed to start: %1").arg(browser.lastError())));
     }
 };
 
