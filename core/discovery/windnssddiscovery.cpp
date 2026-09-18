@@ -268,6 +268,8 @@ VOID WINAPI WinDnsSdDiscovery::onBrowseComplete(DWORD status, PVOID queryContext
         DnsRecordListFree(records, DnsFreeRecordList);
     if (names.isEmpty())
         return;
+    qInfo("lanpipe: DNS-SD browse reported %lld instance(s)",
+          static_cast<long long>(names.size()));
 
     postToOwner(queryContext, [names](WinDnsSdDiscovery *owner) {
         QMetaObject::invokeMethod(owner, [owner, names] { owner->resolveInstances(names); },
@@ -279,23 +281,30 @@ VOID WINAPI WinDnsSdDiscovery::onResolveComplete(DWORD status, PVOID queryContex
                                                  PDNS_SERVICE_INSTANCE instance)
 {
     if (status != ERROR_SUCCESS || instance == nullptr) {
-        // 服务在我们解析之前消失是常态，不当作错误；但留一条 debug 便于排查
+        // 服务在我们解析之前消失是常态，不当作错误；但留一条便于排查
         // 「为什么一直收不到通告」。
-        qDebug("lanpipe: resolving a DNS-SD instance failed (error %lu)",
-               static_cast<unsigned long>(status));
-        if (instance != nullptr)
-            DnsServiceFreeInstance(instance);
+        qInfo("lanpipe: DNS-SD resolve failed (error %lu)",
+              static_cast<unsigned long>(status));
+        // 失败时不碰那个指针：它未必是有效的 DNS_SERVICE_INSTANCE。
         return;
     }
 
     // 同样：拷出来、立刻释放，然后回 Qt 线程。
-    const QString name = QString::fromWCharArray(instance->pszInstanceName);
+    //
+    // 三个字段都要防空：回调拿到的结构体不一定填满，而 fromWCharArray(nullptr)
+    // 是直接崩。宁可少处理一条，也不能把进程带走。
+    const QString name = instance->pszInstanceName != nullptr
+        ? QString::fromWCharArray(instance->pszInstanceName)
+        : QString();
     const quint16 port = instance->wPort;
     const QStringList addresses = addressesFrom(instance);
     const QString hostName = instance->pszHostName != nullptr
         ? QString::fromWCharArray(instance->pszHostName)
         : QString();
     const QHash<QString, QByteArray> txt = txtFrom(instance);
+
+    // 走到这里说明状态是成功、指针有效，这个实例归调用方释放（上面的失败分支
+    // 已经返回，不碰它）。
     DnsServiceFreeInstance(instance);
 
     // 解析结果里没有地址是已知情形，退回按主机名查一次。QHostInfo 收一个接收者对象：
