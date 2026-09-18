@@ -76,9 +76,16 @@ private slots:
         QSignalSpy found(&browser, &WinDnsSdDiscovery::announced);
 
         announcer.start();
-        if (!announcer.lastError().isEmpty())
+        if (!announcer.lastError().isEmpty()) {
+            annotate(QStringLiteral("tst_windnssd/注册启动"),
+                     QStringLiteral("注册方启动失败：%1").arg(announcer.lastError()));
             QSKIP(qPrintable(QStringLiteral("本机不支持系统 DNS-SD：%1").arg(announcer.lastError())));
+        }
         browser.start();
+        if (!browser.lastError().isEmpty()) {
+            annotate(QStringLiteral("tst_windnssd/浏览启动"),
+                     QStringLiteral("浏览方启动失败：%1").arg(browser.lastError()));
+        }
         QVERIFY2(browser.lastError().isEmpty(), qPrintable(browser.lastError()));
 
         // 系统解析要走一次 mDNS 往返，比 Avahi 那条 D-Bus 路慢一些。
