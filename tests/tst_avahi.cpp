@@ -7,13 +7,14 @@
 
 #include <QSignalSpy>
 
-#include "discovery/avahidiscovery.h"
 #include "protocol.h"
+
+#ifdef LANPIPE_HAVE_AVAHI
+
+#include "discovery/avahidiscovery.h"
 
 using namespace lanpipe;
 using namespace lanpipe::discovery;
-
-#ifdef LANPIPE_HAVE_AVAHI
 
 namespace {
 
@@ -148,6 +149,8 @@ private slots:
 QTEST_GUILESS_MAIN(TestAvahi)
 
 #else
+
+using namespace lanpipe;
 
 class TestAvahi : public QObject
 {

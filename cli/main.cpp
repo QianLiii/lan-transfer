@@ -6,7 +6,6 @@
 // 它的第二个身份是 CI 工具：M1–M4 的验收全部靠它驱动，因此必须有
 // 非交互路径（--yes / --pin），否则配对流程需要人工比对 6 位码就无法自动化。
 
-#include "discovery/avahidiscovery.h"
 #include "discovery/broadcastdiscovery.h"
 #include "discovery/peerconnector.h"
 #include "discovery/peerdirectory.h"
@@ -19,6 +18,13 @@
 #include "transfer/ping.h"
 #include "transfer/pingclient.h"
 #include "trust/truststore.h"
+
+// 平台后端只在对应平台上编译：这两个头都依赖各自平台才有的东西
+// （Avahi 要 QtDBus 的包含路径，Win32 DNS-SD 要 Windows SDK），
+// 在别的平台上连包含都不该发生。
+#ifdef LANPIPE_HAVE_AVAHI
+#  include "discovery/avahidiscovery.h"
+#endif
 
 #ifdef LANPIPE_HAVE_WINDNSSD
 #  include "discovery/windnssddiscovery.h"

@@ -11,6 +11,10 @@
 // 只在 Linux 上编译。Windows 走 Windows.Networking.ServiceDiscovery.Dnssd，
 // macOS 走 Network.framework。
 
+#ifndef LANPIPE_HAVE_AVAHI
+#  error "avahidiscovery.h 只在启用了 Avahi 后端（Linux + QtDBus）时编译；其它平台用 windnssddiscovery 或 broadcastdiscovery"
+#endif
+
 #include "discovery.h"
 #include "protocol.h"
 
