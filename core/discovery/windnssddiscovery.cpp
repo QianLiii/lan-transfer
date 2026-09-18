@@ -182,31 +182,31 @@ void WinDnsSdDiscovery::registerService()
     // keys / values 的形参是 PCWSTR *（指向常量的指针），不是 PWSTR *：
     // T ** → const T ** 不能隐式转换，所以这里必须原样传 PCWSTR *，
     // 用 const_cast<PWSTR *> 反而编不过。
-    m_registeredInstance = DnsServiceConstructInstance(
+    m_session->registeredInstance = DnsServiceConstructInstance(
         m_wideName.front().data(), m_wideHost.front().data(), nullptr, nullptr,
         m_config.self.port, 0 /* priority */, 0 /* weight */,
         static_cast<DWORD>(keyPointers.size()), keyPointers.data(), valuePointers.data());
 
-    if (m_registeredInstance == nullptr) {
+    if (m_session->registeredInstance == nullptr) {
         fail(QStringLiteral("DnsServiceConstructInstance returned null"));
         return;
     }
 
-    m_registerRequest = {};
-    m_registerRequest.Version = kRequestVersion;
-    m_registerRequest.InterfaceIndex = 0; // 所有接口
-    m_registerRequest.pServiceInstance = m_registeredInstance;
-    m_registerRequest.pQueryContext = new CallbackContext(this); // 故意不释放
-    m_contexts.push_back(m_registerRequest.pQueryContext);
-    m_registerRequest.pRegisterCompletionCallback = &WinDnsSdDiscovery::onRegisterComplete;
-    m_registerRequest.unicastEnabled = FALSE;
+    m_session->registerRequest = {};
+    m_session->registerRequest.Version = kRequestVersion;
+    m_session->registerRequest.InterfaceIndex = 0; // 所有接口
+    m_session->registerRequest.pServiceInstance = m_session->registeredInstance;
+    m_session->registerRequest.pQueryContext = new CallbackContext(this); // 故意不释放
+    m_contexts.push_back(m_session->registerRequest.pQueryContext);
+    m_session->registerRequest.pRegisterCompletionCallback = &WinDnsSdDiscovery::onRegisterComplete;
+    m_session->registerRequest.unicastEnabled = FALSE;
 
-    const DWORD result = DnsServiceRegister(&m_registerRequest, nullptr);
+    const DWORD result = DnsServiceRegister(&m_session->registerRequest, nullptr);
     if (result != DNS_REQUEST_PENDING) {
         fail(QStringLiteral("DnsServiceRegister failed (error %1)").arg(result));
         return;
     }
-    m_registered = true;
+    m_session->registered = true;
 }
 
 void WinDnsSdDiscovery::browse()
@@ -223,13 +223,13 @@ void WinDnsSdDiscovery::browse()
     m_contexts.push_back(request.pQueryContext);
     request.pBrowseCallback = &WinDnsSdDiscovery::onBrowseComplete;
 
-    const DWORD result = DnsServiceBrowse(&request, &m_browseCancel);
+    const DWORD result = DnsServiceBrowse(&request, &m_session->browseCancel);
     if (result != DNS_REQUEST_PENDING) {
         // 没插网线时这里就是 ERROR_NO_NETWORK（1222）。
         fail(QStringLiteral("DnsServiceBrowse failed (error %1)").arg(result));
         return;
     }
-    m_browsing = true;
+    m_session->browsing = true;
 }
 
 VOID WINAPI WinDnsSdDiscovery::onRegisterComplete(DWORD status, PVOID queryContext,
@@ -239,7 +239,7 @@ VOID WINAPI WinDnsSdDiscovery::onRegisterComplete(DWORD status, PVOID queryConte
 
     // 回调回来之前，那个实例指针归 API 保管，我们不能释放它。
     postToOwner(queryContext, [](WinDnsSdDiscovery *owner) {
-        QMetaObject::invokeMethod(owner, [owner] { owner->m_registerCompleted = true; },
+        QMetaObject::invokeMethod(owner, [owner] { owner->m_session->registerCompleted = true; },
                                   Qt::QueuedConnection);
     });
 
@@ -336,7 +336,7 @@ void WinDnsSdDiscovery::resolveInstances(const QStringList &instanceNames)
         m_contexts.push_back(request.pQueryContext);
         request.pResolveCompletionCallback = &WinDnsSdDiscovery::onResolveComplete;
 
-        DnsServiceResolve(&request, &m_resolveCancel);
+        DnsServiceResolve(&request, &m_session->resolveCancel);
     }
 }
 
@@ -395,19 +395,19 @@ void WinDnsSdDiscovery::stop()
     m_started = false;
     m_refreshTimer->stop();
 
-    if (m_registered) {
-        DnsServiceDeRegister(&m_registerRequest, nullptr);
-        m_registered = false;
+    if (m_session->registered) {
+        DnsServiceDeRegister(&m_session->registerRequest, nullptr);
+        m_session->registered = false;
     }
     // 完成回调还没回来就不释放：那个指针此刻归 API 保管，释放它会让 API 在回调里
     // 用到已释放的内存。宁可少释放一次（每个 start() 一次，几十字节），也不冒这个险。
-    if (m_registeredInstance != nullptr && m_registerCompleted) {
-        DnsServiceFreeInstance(m_registeredInstance);
-        m_registeredInstance = nullptr;
+    if (m_session->registeredInstance != nullptr && m_session->registerCompleted) {
+        DnsServiceFreeInstance(m_session->registeredInstance);
+        m_session->registeredInstance = nullptr;
     }
-    if (m_browsing) {
-        DnsServiceBrowseCancel(&m_browseCancel);
-        m_browsing = false;
+    if (m_session->browsing) {
+        DnsServiceBrowseCancel(&m_session->browseCancel);
+        m_session->browsing = false;
     }
     m_resolved.clear();
 }

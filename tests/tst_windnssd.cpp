@@ -78,6 +78,8 @@ private slots:
 
         mark(QStringLiteral("browser: starting"));
         browser.start();
+        if (!browser.lastError().isEmpty())
+            mark(QStringLiteral("browser failed to start: %1").arg(browser.lastError()));
         QVERIFY2(browser.lastError().isEmpty(),
                  qPrintable(QStringLiteral("the browser failed to start: %1").arg(browser.lastError())));
 
@@ -107,6 +109,8 @@ private slots:
                      browser.lastError().isEmpty() ? QStringLiteral("（空）")
                                                    : browser.lastError(),
                      QString::number(found.count()));
+        if (!matched)
+            mark(diagnosis); // stdout 会随崩溃丢掉，所以诊断也走 stderr
         QVERIFY2(matched, qPrintable(diagnosis));
     }
 

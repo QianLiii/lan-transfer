@@ -139,18 +139,28 @@ private:
 
     Config m_config;
 
-    DNS_SERVICE_REGISTER_REQUEST m_registerRequest{};
-    PDNS_SERVICE_INSTANCE m_registeredInstance = nullptr;
-    bool m_registered = false;
-    // 注册的完成回调是否已经回来过。没回来就说明 API 可能还在用它手里那个实例指针，
-    // 此时释放它是「我们释放了 API 还在用的东西」——想崩就崩。
-    bool m_registerCompleted = false;
+    // 交给 Win32 API 的那些句柄。**故意不释放**（进程结束时由系统回收）。
+    //
+    // 两个理由，都是「我们释放了 API 还在引用的东西」：
+    //   1. API 没有「回调已停止」的回执，取消是异步的——对象析构之后，它的内部线程
+    //      仍可能走一遍手上的指针；
+    //   2. 文档示例里这些变量是 main 的局部量，活到进程结束，正是为此。
+    //
+    // 症状是：测试跑满一分钟、stderr 的进度标记都在、而 QtTest 的输出全没了
+    // ——进程在最后一步崩掉，带缓冲的 stdout 一起丢掉。
+    struct Session
+    {
+        DNS_SERVICE_REGISTER_REQUEST registerRequest{};
+        PDNS_SERVICE_INSTANCE registeredInstance = nullptr;
+        bool registered = false;
+        // 完成回调是否回来过。没回来就说明实例指针还归 API 保管，不能释放。
+        bool registerCompleted = false;
 
-    // 浏览是否真的启动过。没启动过就不该去取消——cancel 句柄此时是零值，
-    // 拿它去调 API 是没定义的行为。
-    bool m_browsing = false;
-    DNS_SERVICE_CANCEL m_browseCancel{};
-    DNS_SERVICE_CANCEL m_resolveCancel{};
+        DNS_SERVICE_CANCEL browseCancel{};
+        bool browsing = false; // 没启动过就不去取消：句柄此时是零值
+        DNS_SERVICE_CANCEL resolveCancel{};
+    };
+    Session *m_session = new Session();
 
     // 注册时用到的字符串必须活到 API 拷走它们为止。
     std::vector<std::wstring> m_wideKeys;
