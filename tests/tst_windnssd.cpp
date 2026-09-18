@@ -7,6 +7,7 @@
 
 #include <QtTest>
 
+#include <QElapsedTimer>
 #include <QSignalSpy>
 
 #include <cstdio>
@@ -84,9 +85,17 @@ private slots:
                  qPrintable(QStringLiteral("the browser failed to start: %1").arg(browser.lastError())));
 
         // 系统解析要走一次 mDNS 往返，比 Avahi 那条 D-Bus 路慢一些。
+        //
+        // 这里刻意不用 QTRY_VERIFY_WITH_TIMEOUT：它在超时时直接 return，
+        // 下面那行诊断就永远打不出来——而诊断正是这条测试唯一的价值。
         mark(QStringLiteral("waiting for announcements..."));
-        QTRY_VERIFY_WITH_TIMEOUT(found.count() > 0, 15000);
-        mark(QStringLiteral("got %1 announcement(s)").arg(found.count()));
+        QElapsedTimer timer;
+        timer.start();
+        while (found.count() == 0 && timer.elapsed() < 15000)
+            QTest::qWait(100);
+        mark(QStringLiteral("got %1 announcement(s) after %2 ms")
+                 .arg(found.count())
+                 .arg(timer.elapsed()));
 
         bool matched = false;
         for (const QList<QVariant> &emission : found) {

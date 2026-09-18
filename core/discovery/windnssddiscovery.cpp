@@ -29,8 +29,13 @@ QStringList instanceNamesFrom(PDNS_RECORD records)
     for (PDNS_RECORD record = records; record != nullptr; record = record->pNext) {
         if (record->wType != DNS_TYPE_PTR || record->Data.PTR.pNameHost == nullptr)
             continue;
-        const QString name = QString::fromWCharArray(record->Data.PTR.pNameHost);
-        if (name.endsWith(suffix) && !names.contains(name))
+
+        QString name = QString::fromWCharArray(record->Data.PTR.pNameHost);
+        // 完全限定名可能带结尾的点（mDNS 的写法是 "…local."），也可能大小写不同。
+        // 不认这两种写法的话，名字会被整批滤掉，表现为「浏览器一条都没报」。
+        if (name.endsWith(QLatin1Char('.')))
+            name.chop(1);
+        if (name.endsWith(suffix, Qt::CaseInsensitive) && !names.contains(name))
             names.append(name);
     }
     return names;
@@ -262,14 +267,22 @@ VOID WINAPI WinDnsSdDiscovery::onBrowseComplete(DWORD status, PVOID queryContext
 {
     // 这个线程不是 Qt 线程：只做拷贝与释放，然后把结果投递回去。
     QStringList names;
-    if (status == ERROR_SUCCESS && records != nullptr)
+    int recordCount = 0;
+    if (status == ERROR_SUCCESS && records != nullptr) {
+        for (PDNS_RECORD record = records; record != nullptr; record = record->pNext)
+            ++recordCount;
         names = instanceNamesFrom(records);
+    }
+
+    // 这行必须在下面的提前返回之前：空名单恰恰是最需要看见的情形。
+    qInfo("lanpipe: DNS-SD browse callback: status=%lu records=%d matching=%lld",
+          static_cast<unsigned long>(status), recordCount,
+          static_cast<long long>(names.size()));
+
     if (records != nullptr)
         DnsRecordListFree(records, DnsFreeRecordList);
     if (names.isEmpty())
         return;
-    qInfo("lanpipe: DNS-SD browse reported %lld instance(s)",
-          static_cast<long long>(names.size()));
 
     postToOwner(queryContext, [names](WinDnsSdDiscovery *owner) {
         QMetaObject::invokeMethod(owner, [owner, names] { owner->resolveInstances(names); },
