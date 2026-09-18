@@ -142,23 +142,22 @@ jobs:
 
       # GitHub 的 job 日志要鉴权才能下载，注解不用。把失败摘要写成注解，
       # 无凭据的诊断就也能直接看到原因（而不是只知道「exit code 1」）。
+      # GitHub 的 job 日志要鉴权才能下载，注解不用。把失败摘要与失败用例的输出
+      # 都写成注解，无凭据的诊断（以及拉取请求页面）就能直接看到原因。
+      #
+      # 注意每一步都带 `|| true`：GitHub 的 bash 步骤是 set -e，而这里到处是
+      # 「没匹配就返回 1」的命令，不加会把整步提前掐断——症状是只有第一条注解出现。
       - name: 测试失败时把摘要写成注解
         if: failure()
         shell: bash
         run: |
-          # 先摘要（哪个套件失败），再取失败测试自己的输出——QVERIFY 那句话在里面。
-          summary=$(tail -c 1200 ctest.log 2>/dev/null | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}')
-          echo "::error title=ctest 摘要::$summary"
+          summary=$(tail -c 1200 ctest.log 2>/dev/null || true)
+          echo "::error title=ctest 摘要::$(printf '%s' "$summary" | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"}{print}')"
 
-          # 按行取，不按字节：一行可能是上百字节的命令行，按字节能取到的行数太少。
-          detail=build/ci/Testing/Temporary/LastTest.log
-          if [ -f "$detail" ]; then
-            hits=$(grep -E 'FAIL!|QVERIFY|QSKIP|Loc:' "$detail" | tail -40 \
-                   | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}')
-            echo "::error title=测试的断言输出::$hits"
-            tailbody=$(tail -n 120 "$detail" | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}')
-            echo "::error title=LastTest.log 末尾::$tailbody"
-          fi
+          # 重跑失败的用例，这一次带完整输出。重跑是值得的：它给出的是失败现场本身，
+          # 而不是从日志里猜。
+          out=$(ctest --preset ci --rerun-failed --output-on-failure 2>&1 || true)
+          echo "::error title=失败用例重跑输出::$(printf '%s' "$out" | tail -c 5000 | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"}{print}')"
 
       # M0 的第三条验收：CLI 可 headless 运行。
       # 用 bash 是为了三个平台共用一条命令（Windows 上是 Git Bash）。
