@@ -9,6 +9,8 @@
 
 #include <QSignalSpy>
 
+#include <cstdio>
+
 #include "protocol.h"
 
 #ifdef LANPIPE_HAVE_WINDNSSD
@@ -19,6 +21,20 @@ using namespace lanpipe;
 using namespace lanpipe::discovery;
 
 namespace {
+
+// CI 的 job 日志要鉴权才能下载，注解不需要。把失败原因按 GitHub 的注解格式
+// 直接打到 stdout，它就会被渲染成注解——这是 Windows 上唯一能看到的失败现场。
+//
+// 与 ctest 的输出顺序无关，也与日志截取无关：这是发射端在说话，不是去捞日志。
+void annotate(const QString &title, const QString &text)
+{
+    QByteArray line = "::error title=" + title.toUtf8() + "::";
+    line += text.toUtf8();
+    line.replace("\n", " ");
+    line += '\n';
+    std::fwrite(line.constData(), 1, static_cast<size_t>(line.size()), stdout);
+    std::fflush(stdout);
+}
 
 // 指定初始化漏字段会触发 -Wmissing-field-initializers，所以配置这样拼。
 WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
@@ -81,18 +97,17 @@ private slots:
             QVERIFY(!announcement.address.isNull());
             break;
         }
-        // 失败时把两个后端的诊断一起说出来——在 Windows 上这是唯一能看到的现场。
-        QVERIFY2(matched,
-                 qPrintable(QStringLiteral("没有从浏览结果里拿到注册的那条服务\n"
-                                           "  注册方 lastError：%1\n"
-                                           "  浏览方 lastError：%2\n"
-                                           "  浏览方收到的通告数：%3")
-                                .arg(announcer.lastError().isEmpty()
-                                         ? QStringLiteral("（空）")
-                                         : announcer.lastError(),
-                                     browser.lastError().isEmpty() ? QStringLiteral("（空）")
-                                                                   : browser.lastError(),
-                                     QString::number(found.count()))));
+        const QString diagnosis =
+            QStringLiteral("没有从浏览结果里拿到注册的那条服务；注册方 lastError=%1；"
+                           "浏览方 lastError=%2；收到的通告数=%3")
+                .arg(announcer.lastError().isEmpty() ? QStringLiteral("（空）")
+                                                     : announcer.lastError(),
+                     browser.lastError().isEmpty() ? QStringLiteral("（空）")
+                                                   : browser.lastError(),
+                     QString::number(found.count()));
+        if (!matched)
+            annotate(QStringLiteral("tst_windnssd"), diagnosis);
+        QVERIFY2(matched, qPrintable(diagnosis));
     }
 
     void instanceDoesNotFindItself()
@@ -121,6 +136,10 @@ private slots:
                                       QStringLiteral("只要浏览"), 0),
                       false));
         browser.start();
+        if (!browser.lastError().isEmpty()) {
+            annotate(QStringLiteral("tst_windnssd/只浏览"),
+                     QStringLiteral("只浏览模式启动失败：lastError=%1").arg(browser.lastError()));
+        }
         QVERIFY2(browser.lastError().isEmpty(), qPrintable(browser.lastError()));
     }
 };
