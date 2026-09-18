@@ -137,14 +137,28 @@ jobs:
 
       # ctest 只在失败时打印子进程输出，跳过的用例连一行都不打——CI 里只剩
       # ***Skipped，看不出为什么。原因与进度标记都在 LastTest.log 里，这里捞一遍。
-      # `|| true` 不能省：GitHub 的 bash 步骤是 set -e，grep 无匹配会返回 1。
-      - name: 打印测试留下的标记与跳过原因
+      #
+      # 这一步的 stdout 就是运行器解析 workflow command 的地方（测试自己的 stdout
+      # 被 ctest 收走了），所以只有在这里发注解才发得出去。
+      #
+      # 每条命令都带 `|| true`：GitHub 的 bash 步骤是 set -e，而 grep 无匹配返回 1。
+      - name: 打印测试留下的标记，跳过时发一条 warning 注解
         if: always()
         shell: bash
         run: |
           log=build/ci/Testing/Temporary/LastTest.log
-          [ -f "$log" ] || exit 0
-          grep -hE '\[tst_|SKIP!' "$log" || true
+          if [ ! -f "$log" ]; then exit 0; fi
+
+          marks=$(grep -hE '\[tst_|SKIP!' "$log" | tail -40 || true)
+          if [ -n "$marks" ]; then printf '%s\n' "$marks"; fi
+
+          # 只有真有东西被跳过时才发注解——绿着的运行不该冒警告。
+          skipped=$(printf '%s' "$marks" | grep -E 'skipping:|SKIP!' || true)
+          if [ -z "$skipped" ]; then exit 0; fi
+
+          # workflow command 的转义规则：% 写成 %25，换行写成 %0A。
+          body=$(printf '%s' "$skipped" | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"}{print}')
+          echo "::warning title=skipped tests on this platform::$body"
 
       # M0 的第三条验收：CLI 可 headless 运行。
       # 用 bash 是为了三个平台共用一条命令（Windows 上是 Git Bash）。
