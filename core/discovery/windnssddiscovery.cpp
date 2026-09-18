@@ -221,12 +221,20 @@ void WinDnsSdDiscovery::browse()
         fail(QStringLiteral("DnsServiceBrowse 失败（错误码 %1）").arg(result));
         return;
     }
+    m_browsing = true;
 }
 
 VOID WINAPI WinDnsSdDiscovery::onRegisterComplete(DWORD status, PVOID queryContext,
                                                   PDNS_SERVICE_INSTANCE instance)
 {
     Q_UNUSED(instance);
+
+    // 回调回来之前，那个实例指针归 API 保管，我们不能释放它。
+    postToOwner(queryContext, [](WinDnsSdDiscovery *owner) {
+        QMetaObject::invokeMethod(owner, [owner] { owner->m_registerCompleted = true; },
+                                  Qt::QueuedConnection);
+    });
+
     if (status == ERROR_SUCCESS)
         return;
 
@@ -379,11 +387,16 @@ void WinDnsSdDiscovery::stop()
         DnsServiceDeRegister(&m_registerRequest, nullptr);
         m_registered = false;
     }
-    if (m_registeredInstance != nullptr) {
+    // 完成回调还没回来就不释放：那个指针此刻归 API 保管，释放它会让 API 在回调里
+    // 用到已释放的内存。宁可少释放一次（每个 start() 一次，几十字节），也不冒这个险。
+    if (m_registeredInstance != nullptr && m_registerCompleted) {
         DnsServiceFreeInstance(m_registeredInstance);
         m_registeredInstance = nullptr;
     }
-    DnsServiceBrowseCancel(&m_browseCancel);
+    if (m_browsing) {
+        DnsServiceBrowseCancel(&m_browseCancel);
+        m_browsing = false;
+    }
     m_resolved.clear();
 }
 

@@ -142,7 +142,13 @@ private:
     DNS_SERVICE_REGISTER_REQUEST m_registerRequest{};
     PDNS_SERVICE_INSTANCE m_registeredInstance = nullptr;
     bool m_registered = false;
+    // 注册的完成回调是否已经回来过。没回来就说明 API 可能还在用它手里那个实例指针，
+    // 此时释放它是「我们释放了 API 还在用的东西」——想崩就崩。
+    bool m_registerCompleted = false;
 
+    // 浏览是否真的启动过。没启动过就不该去取消——cancel 句柄此时是零值，
+    // 拿它去调 API 是没定义的行为。
+    bool m_browsing = false;
     DNS_SERVICE_CANCEL m_browseCancel{};
     DNS_SERVICE_CANCEL m_resolveCancel{};
 
