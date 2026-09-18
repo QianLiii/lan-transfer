@@ -46,6 +46,10 @@ endif()
 add_library(lanpipe_warnings INTERFACE)
 if(MSVC)
     target_compile_options(lanpipe_warnings INTERFACE /W4 /permissive-)
+    # windows.h 的瘦身开关。WIN32_LEAN_AND_MEAN 尤其重要：不带它时 windows.h 会拉进
+    # 旧版 winsock.h，而 Win32 DNS-SD 那边要用 winsock2.h，两者冲突。放在这里
+    # 就是让任何一处先包含 windows.h 都不至于把后手堵死。
+    target_compile_definitions(lanpipe_warnings INTERFACE WIN32_LEAN_AND_MEAN NOMINMAX)
 else()
     target_compile_options(lanpipe_warnings INTERFACE -Wall -Wextra -Wpedantic)
 endif()

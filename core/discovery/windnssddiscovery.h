@@ -13,19 +13,10 @@
 // 拷成 Qt 类型、投递到对象所在的线程；回调的上下文对象故意不释放，理由见 .cpp。
 //
 // 只在 Windows 上编译。Linux 对应的是 avahidiscovery。
-
-#include "discovery.h"
-#include "protocol.h"
-
-#include <QHash>
-#include <QString>
-#include <QStringList>
-#include <QTimer>
-
-#include <chrono>
-#include <functional>
-#include <mutex>
-#include <vector>
+//
+// 下面这一整块 Windows 头排在 Qt 头**之前**是有意的：windns.h 依赖 winsock2.h 与
+// windows.h 里的基础类型，而 windows.h 若先被别的头拉进来（且没有 WIN32_LEAN_AND_MEAN），
+// 它会带进旧版 winsock.h，与 winsock2.h 冲突——那类错误比缺类型更难定位。
 
 #ifndef _WIN32
 #  error "windnssddiscovery.h 只在 Windows 上编译；其它平台用 avahidiscovery 或 broadcastdiscovery"
@@ -38,13 +29,37 @@
 #  undef NTDDI_VERSION
 #  define NTDDI_VERSION NTDDI_WIN10_RS5
 #endif
+
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif
+
+// windns.h 不自己拉这些前置：USHORT / ULONG / LPWSTR 来自 windows.h，
+// IP4_ADDRESS / IP6_ADDRESS 来自 winsock2.h。少了它们，windnsdef.h 里每个成员的
+// 类型都不认识，报的是一串「unknown override specifier」——看不出跟包含顺序有关。
+//
+// 顺序也有讲究：winsock2.h 必须在 windows.h 之前，否则 windows.h 先拉进旧版
+// winsock.h，两者会冲突。
+#include <winsock2.h>
+#include <windows.h>
 #include <windns.h>
+
+#include "discovery.h"
+#include "protocol.h"
+
+#include <QHash>
+#include <QString>
+#include <QStringList>
+#include <QTimer>
+
+#include <chrono>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace lanpipe::discovery {
 

@@ -60,7 +60,7 @@ QStringList addressesFrom(const DNS_SERVICE_INSTANCE *instance)
         addresses.append(QHostAddress(qFromBigEndian(raw)).toString());
     }
     if (instance->ip6Address != nullptr) {
-        Q_IPv6Address raw;
+        Q_IPV6ADDR raw; // 注意名字：Qt 里是 Q_IPV6ADDR，不是 Q_IPv6Address
         std::memcpy(&raw, instance->ip6Address, sizeof(raw));
         addresses.append(QHostAddress(raw).toString());
     }
