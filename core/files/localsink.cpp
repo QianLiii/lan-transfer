@@ -83,7 +83,11 @@ std::unique_ptr<QIODevice> LocalFileSink::open()
 
 quint64 LocalFileSink::bytesWritten() const
 {
-    // 设备还活着就以它为准；已经交出所有权之后用 commit 时记下的快照。
+    // commit 之后数据已经被改名走，设备上再也问不出长度（QSaveFile::size() 会去
+    // stat 那个已经不在的临时路径，返回 0）——所以用 commit 时记下的快照。
+    if (m_committed)
+        return m_written;
+    // 设备还活着就以它为准；调用方提前销毁了设备时退回快照。
     return m_file ? static_cast<quint64>(m_file->size()) : m_written;
 }
 

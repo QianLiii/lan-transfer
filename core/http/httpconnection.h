@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <functional>
+#include <optional>
 
 class QSslSocket;
 class QTimer;
@@ -55,6 +56,12 @@ public:
     // 开始流式读体，最多 cap 字节。声明的长度超过 cap 时立刻 409 并关连接，
     // 一个字节都不读（§5.3）。收满全部字节后发出 bodyComplete()。
     void readBody(quint64 cap, BodySink sink);
+
+    // 读体中途失败（磁盘满、写盘出错）时由 sink 调用：记住要回的状态码，
+    // 停止读体并关连接。调用之后必须从 sink 返回 false。
+    //
+    // 不在这里直接 respond()：那会销毁正在执行的那个 sink 函数对象。
+    void failBody(const Response &response);
 
     // 回答并关闭：写完最后一个字节后进入关闭流程。
     void respond(const Response &response);
@@ -100,6 +107,7 @@ private:
 
     BodySink m_bodySink;
     quint64 m_bodyRemaining = 0;
+    std::optional<Response> m_pendingFailure;
 };
 
 } // namespace lanpipe::http

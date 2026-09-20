@@ -160,23 +160,41 @@ void HttpConnection::parseHead()
     // 会误杀它，那时必须在这里暂停计时器（§5.8）。
 }
 
+void HttpConnection::failBody(const Response &response)
+{
+    if (m_responded || m_phase != Phase::ReadingBody || m_pendingFailure.has_value())
+        return;
+    m_pendingFailure = response;
+}
+
 void HttpConnection::pumpBody()
 {
-    while (m_bodyRemaining > 0 && !m_buffer.isEmpty()) {
+    bool keepGoing = true;
+    while (keepGoing && m_bodyRemaining > 0 && !m_buffer.isEmpty()) {
         const auto take = static_cast<qsizetype>(
             std::min<quint64>(m_bodyRemaining, static_cast<quint64>(m_buffer.size())));
 
-        const bool keepGoing =
-            !m_bodySink || m_bodySink(QByteArrayView(m_buffer.constData(), take));
+        keepGoing = !m_bodySink || m_bodySink(QByteArrayView(m_buffer.constData(), take));
+        if (!keepGoing)
+            break; // 收尾统一在下面决定：回答还是断连
 
         m_buffer.remove(0, take);
         m_bodyRemaining -= static_cast<quint64>(take);
+    }
 
-        if (!keepGoing) {
-            // 接收方中途放弃：直接断开，不发响应（§5.5）。
-            abort();
-            return;
-        }
+    // 失败方给了状态码：等 sink 返回之后再回答——respond() 会销毁正在执行的那个
+    // std::function，在它自己的调用栈里销毁它是踩空。
+    if (m_pendingFailure.has_value()) {
+        const Response response = *m_pendingFailure;
+        m_pendingFailure.reset();
+        respond(response);
+        return;
+    }
+
+    // 没有状态码的放弃：直接断开，不发响应（§5.5 的取消就是这个语义）。
+    if (!keepGoing) {
+        abort();
+        return;
     }
 
     if (m_bodyRemaining == 0) {
