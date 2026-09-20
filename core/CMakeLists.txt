@@ -32,10 +32,14 @@ add_library(lanpipe_core STATIC
     tlsbackend.cpp
     transfer/transfer.h
     transfer/transfer.cpp
+    transfer/peerpinning.h
+    transfer/peerpinning.cpp
     transfer/receivesession.h
     transfer/receivesession.cpp
     transfer/receiveservice.h
     transfer/receiveservice.cpp
+    transfer/sendclient.h
+    transfer/sendclient.cpp
     transfer/ping.h
     transfer/ping.cpp
     transfer/pingclient.h

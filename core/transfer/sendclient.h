@@ -1,0 +1,115 @@
+#pragma once
+
+// 发送方：prepare → 逐个 PUT → complete（§5）。
+//
+// 显式状态机，不是回调链：串行多步套 lambda 会变成一层套一层，而每一步的失败处理
+// 与取消都要重写一遍。这里每一跳只做一件事，由 reply 的 finished 驱动。
+//
+// 每个请求都新建连接（§5.15 的一条连接一个请求），也就都要重新做一次指纹判定。
+
+#include "files/filesource.h"
+#include "identity.h"
+#include "transfer/peerpinning.h"
+#include "transfer/transfer.h"
+
+#include <QObject>
+#include <QStringList>
+#include <QUrl>
+
+#include <memory>
+#include <optional>
+
+class QNetworkAccessManager;
+class QNetworkReply;
+class QNetworkRequest;
+class QIODevice;
+
+namespace lanpipe::transfer {
+
+class SendClient : public QObject
+{
+    Q_OBJECT
+
+public:
+    struct Result
+    {
+        bool ok = false;
+        bool cancelled = false;
+        QString error;
+        quint64 totalBytes = 0;
+        // 端到端核对没过的文件：complete 报回来的字节数与实际发出的不符。
+        QStringList unverifiedFiles;
+    };
+
+    explicit SendClient(trust::TrustStore &trust, QObject *parent = nullptr);
+    ~SendClient() override;
+
+    // 每个 source 的 size() 都必须有值：大小定不下来的文件在 prepare 之前就被拒，
+    // 一个请求都不发（§5.14）。
+    void start(const QUrl &url, const Identity &identity, const QString &deviceName,
+               const QList<std::shared_ptr<files::FileSource>> &sources,
+               std::optional<Fingerprint> expected = std::nullopt);
+
+    // 发送方取消：尽力通知接收方（abort），然后本地收尾。
+    void cancel();
+
+    // 有过一次回话（哪怕内容是拒绝）。逐地址回退只该在「完全没连上」时触发：
+    // 收到任何应答都说明这个地址是通的，问题在别处。
+    [[nodiscard]] bool peerContacted() const { return m_peerContacted; }
+
+signals:
+    void prepared(const QString &sessionId);
+    void fileProgress(const QString &fileId, quint64 sent, quint64 total);
+    void finished(const lanpipe::transfer::SendClient::Result &result);
+
+private:
+    enum class Step { Idle, Preparing, Uploading, Completing, Aborting, Done };
+
+    struct Item
+    {
+        QString id;
+        QString name;
+        quint64 size = 0;
+        std::shared_ptr<files::FileSource> source;
+        quint64 sent = 0;
+        bool done = false;
+    };
+
+    void sendPrepare();
+    void sendNextFile();
+    void sendComplete();
+    void sendAbort();
+
+    void onReplyFinished(QNetworkReply *reply, Step step);
+    void wireReply(QNetworkReply *reply); // 指纹判定 + 进度
+    [[nodiscard]] QNetworkRequest makeRequest(const QUrl &url) const;
+    [[nodiscard]] QUrl urlWithPath(const std::string &path) const;
+
+    void fail(const QString &error);
+    void reportResult(Result result);
+
+    QNetworkAccessManager *m_manager = nullptr;
+    trust::TrustStore &m_trust;
+    PeerPin m_pin;
+    Identity m_identity;
+
+    Step m_step = Step::Idle;
+    QUrl m_baseUrl;
+    QString m_deviceName; // 随 prepare 交给接收方：它的用户要先看到「这是谁」
+    QString m_sessionId;
+    QList<Item> m_items;
+    quint64 m_totalBytes = 0;
+    qsizetype m_index = 0;
+
+    QNetworkReply *m_reply = nullptr;
+    // QNAM 不接管设备：它必须活到 reply 的 finished（头文件已经写明）。
+    std::unique_ptr<QIODevice> m_device;
+    Result m_result; // 失败原因在中途就记下，收尾时统一报出去
+    bool m_peerContacted = false;
+    bool m_cancelled = false;
+    bool m_reported = false;
+};
+
+} // namespace lanpipe::transfer
+
+Q_DECLARE_METATYPE(lanpipe::transfer::SendClient::Result)

@@ -9,6 +9,8 @@
 #include "discovery/broadcastdiscovery.h"
 #include "discovery/peerconnector.h"
 #include "discovery/peerdirectory.h"
+#include "files/localsource.h"
+#include "files/recvdir.h"
 #include "http/httpserver.h"
 #include "identity.h"
 #include "protocol.h"
@@ -17,6 +19,9 @@
 #include "tlsbackend.h"
 #include "transfer/ping.h"
 #include "transfer/pingclient.h"
+#include "transfer/receiveservice.h"
+#include "transfer/sendclient.h"
+#include "trust/sanitizer.h"
 #include "trust/truststore.h"
 
 // 平台后端只在对应平台上编译：这两个头都依赖各自平台才有的东西
@@ -34,6 +39,7 @@
 #include <QDateTime>
 #include <QSysInfo>
 #include <QElapsedTimer>
+#include <QSocketNotifier>
 #include <QString>
 #include <QStringList>
 #include <QTextStream>
@@ -42,6 +48,11 @@
 #include <cstdio>
 #include <memory>
 #include <optional>
+
+#ifndef Q_OS_WIN
+#  include <csignal>
+#  include <unistd.h>
+#endif
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -56,8 +67,23 @@ enum ExitCode {
     kExitFailure = 1,        // 运行期失败
     kExitUsage = 2,          // 参数错误
     kExitTlsBackend = 3,     // TLS 后端不可用（环境问题，不是代码问题）
-    kExitNotImplemented = 10 // 该里程碑尚未实现
+    kExitNotImplemented = 10, // 该里程碑尚未实现
+    kExitInterrupted = 130   // 被 SIGINT 打断（128 + 2，与 shell 惯例一致）
 };
+
+#ifndef Q_OS_WIN
+
+// SIGINT 的自来水管：信号处理器里只能做异步信号安全的事，所以里面只 write()，
+// 真正的处理留给事件循环里的 QSocketNotifier。
+int g_signalPipe[2] = {-1, -1};
+
+extern "C" void onInterrupt(int)
+{
+    const char byte = 1;
+    [[maybe_unused]] const ssize_t ignored = ::write(g_signalPipe[1], &byte, 1);
+}
+
+#endif
 
 struct Options
 {
@@ -95,8 +121,8 @@ QString usageText()
         "lanpipe —— 局域网文件传输\n"
         "\n"
         "用法：\n"
-        "  lanpipe serve [--port <n>]              作为接收方监听并应答 /ping\n"
-        "  lanpipe send <目标> <文件>...            发送文件（M3 起）\n"
+        "  lanpipe serve [--port <n>]              作为接收方监听：接收文件、应答配对\n"
+        "  lanpipe send <目标> <文件>...            发送文件给一台**已配对**的设备\n"
         "  lanpipe pair <目标> [--pin <fp>]        与目标配对：两端各显示 6 位、各输入对方的\n"
         "                                          目标可以是 deviceId 的十六进制前缀\n"
         "                                          （先广播发现），或 host:port（手工地址）\n"
@@ -241,6 +267,46 @@ void printIdentity(const lanpipe::Identity &identity)
     writeStdout(QStringLiteral("指纹     %1").arg(identity.fingerprint().toHex()));
 }
 
+// 目标：手工给的 host:port（§3.5），或 deviceId 前缀（先发现再连）。pair 与 send
+// 用的是同一套写法。
+struct PeerTarget
+{
+    bool byDeviceId = false;
+    QString host;
+    quint16 port = 0;
+    QString deviceIdPrefix;
+};
+
+std::optional<PeerTarget> parseTarget(const QString &text)
+{
+    PeerTarget target;
+
+    const qsizetype colon = text.lastIndexOf(QLatin1Char(':'));
+    if (colon > 0 && colon < text.size() - 1) {
+        bool portOk = false;
+        const int port = text.mid(colon + 1).toInt(&portOk);
+        if (portOk && port > 0 && port <= 65535) {
+            target.host = text.left(colon);
+            target.port = static_cast<quint16>(port);
+            return target;
+        }
+        return std::nullopt;
+    }
+
+    // deviceId 的十六进制前缀。允许短前缀是为了少打字；32 位是完整长度。
+    const QString prefix = text.toLower();
+    if (prefix.size() < 4 || prefix.size() > lanpipe::proto::kDeviceIdBytes * 2)
+        return std::nullopt;
+    for (const QChar c : prefix) {
+        if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f')))
+            return std::nullopt;
+    }
+
+    target.byDeviceId = true;
+    target.deviceIdPrefix = prefix;
+    return target;
+}
+
 int runServe(const Options &options)
 {
     using namespace lanpipe;
@@ -301,12 +367,78 @@ int runServe(const Options &options)
                          }
                      });
 
-    server.setHandler([&ping](http::HttpConnection &connection) {
+    // 接收目录：Settings 里没设过就回落到下载目录。不解析的话，临时目录会落在
+    // 进程的工作目录里——而「临时数据在接收目录之下」是 §5.7 全部安全性的前提。
+    const auto receiveDir = files::resolveReceiveDir(settings.receiveDir());
+    if (!receiveDir.has_value()) {
+        writeStderr(receiveDir.error());
+        return kExitFailure;
+    }
+
+    transfer::ReceiveService transfers(settings, *trust, *receiveDir, &server);
+
+    QObject::connect(
+        &transfers, &transfer::ReceiveService::approvalRequired,
+        [&transfers](const transfer::TransferRequest &request) {
+            writeStdout(QStringLiteral("接收请求：%1，%2 个文件，共 %3 字节")
+                            .arg(trust::displaySafe(request.senderName))
+                            .arg(request.files.size())
+                            .arg(request.totalSize));
+            for (const transfer::TransferFile &file : request.files) {
+                writeStdout(QStringLiteral("  %1  %2 字节")
+                                .arg(trust::displaySafe(file.name))
+                                .arg(file.size));
+            }
+            writeStdout(QStringLiteral("接收？（y/N）"));
+
+            // 与配对同理：这一刻整个服务停在这里，所以审批窗口的计时器在 CLI 下
+            // 不会响（事件循环没在转）。GUI 版（M5）用异步输入才真正生效。
+            QTextStream in(stdin);
+            const QString answer = in.readLine().trimmed();
+            transfers.submitApproval(answer.startsWith(QLatin1Char('y'), Qt::CaseInsensitive)
+                                     || answer.startsWith(QLatin1Char('Y')));
+        });
+
+    // 进度按 10% 一档打：一块一块地打，1 MB 就是两百多行。
+    auto lastReportedPercent = std::make_shared<QHash<QString, int>>();
+    QObject::connect(&transfers, &transfer::ReceiveService::fileProgress,
+                     [lastReportedPercent](const QString &fileId, quint64 received, quint64 total) {
+                         if (total == 0)
+                             return;
+                         const int percent = static_cast<int>(received * 100 / total);
+                         if ((*lastReportedPercent)[fileId] / 10 == percent / 10 && percent < 100)
+                             return;
+                         (*lastReportedPercent)[fileId] = percent;
+                         writeStdout(QStringLiteral("  收 %1  %2%")
+                                         .arg(fileId.left(8))
+                                         .arg(percent));
+                     });
+    QObject::connect(&transfers, &transfer::ReceiveService::fileCommitted,
+                     [](const QString &fileId, const QString &finalPath, quint64 bytes) {
+                         writeStdout(QStringLiteral("已接收 %1（%2 字节）→ %3")
+                                         .arg(fileId.left(8))
+                                         .arg(bytes)
+                                         .arg(finalPath));
+                     });
+    QObject::connect(&transfers, &transfer::ReceiveService::sessionFinished,
+                     [](const QString &sessionId, bool completed) {
+                         writeStdout(QStringLiteral("会话 %1 %2")
+                                         .arg(sessionId.left(8),
+                                              completed ? QStringLiteral("已完成")
+                                                        : QStringLiteral("已结束")));
+                     });
+
+    server.setHandler([&ping, &transfers](http::HttpConnection &connection) {
         if (transfer::PingService::handles(connection.head().target)) {
             ping.handle(connection);
             return;
         }
-        connection.respond(http::Response::text(http::Status::NotFound,
+        if (transfer::ReceiveService::handles(connection.head().target)) {
+            transfers.handle(connection);
+            return;
+        }
+        // §5.15：端点集是封闭的，集合之外一律 400 并关连接，不是 404。
+        connection.respond(http::Response::text(http::Status::BadRequest,
                                                 QStringLiteral("未知目标")));
     });
 
@@ -338,53 +470,218 @@ int runServe(const Options &options)
                      });
     printIdentity(*identity);
     writeStdout(QStringLiteral("正在监听 %1，协议版本 %2").arg(*port).arg(proto::kVersion));
+    writeStdout(QStringLiteral("接收目录 %1").arg(*receiveDir));
+
+#ifndef Q_OS_WIN
+    // Ctrl-C 是接收方唯一的取消入口：M3 的 CLI 在传输期间没有别的交互。
+    if (::pipe(g_signalPipe) == 0) {
+        auto *notifier = new QSocketNotifier(g_signalPipe[0], QSocketNotifier::Read, &server);
+        QObject::connect(notifier, &QSocketNotifier::activated, &server, [&transfers] {
+            char byte = 0;
+            [[maybe_unused]] const ssize_t ignored = ::read(g_signalPipe[0], &byte, 1);
+            writeStdout(QStringLiteral("收到中断，取消当前传输"));
+            transfers.cancelActive();
+            // 拆除是投递到事件循环的（避免在别人栈上析构会话），而下面就要退出——
+            // 不转一圈的话临时数据会留在盘上，而「取消后不留临时数据」正是验收项。
+            for (int i = 0; i < 100 && transfers.hasActiveSession(); ++i)
+                 QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            QCoreApplication::exit(kExitInterrupted);
+        });
+        std::signal(SIGINT, onInterrupt);
+    }
+#endif
+
     return QCoreApplication::exec();
 }
 
 int runSend(const Options &options)
 {
-    Q_UNUSED(options);
-    writeStderr(QStringLiteral("send：尚未实现（M3 起：传输引擎）"));
-    return kExitNotImplemented;
-}
+    using namespace lanpipe;
+    using lanpipe::transfer::SendClient;
 
-// pair 的目标：手工给的 host:port（§3.5），或 deviceId 前缀（先发现再连）。
-struct PairTarget
-{
-    bool byDeviceId = false;
-    QString host;
-    quint16 port = 0;
-    QString deviceIdPrefix;
-};
+    if (options.args.size() < 2) {
+        writeStderr(QStringLiteral("错误：send 需要 <目标> <文件>..."));
+        return kExitUsage;
+    }
 
-std::optional<PairTarget> parsePairTarget(const QString &text)
-{
-    PairTarget target;
+    const auto target = parseTarget(options.args.first());
+    if (!target.has_value()) {
+        writeStderr(QStringLiteral("错误：目标应当是 deviceId 的十六进制前缀，"
+                                   "或者 host:port，收到 %1")
+                        .arg(options.args.first()));
+        return kExitUsage;
+    }
 
-    const qsizetype colon = text.lastIndexOf(QLatin1Char(':'));
-    if (colon > 0 && colon < text.size() - 1) {
-        bool portOk = false;
-        const int port = text.mid(colon + 1).toInt(&portOk);
-        if (portOk && port > 0 && port <= 65535) {
-            target.host = text.left(colon);
-            target.port = static_cast<quint16>(port);
-            return target;
+    std::optional<Fingerprint> expected;
+    if (!options.pin.isEmpty()) {
+        expected = Fingerprint::fromHex(options.pin);
+        if (!expected.has_value()) {
+            writeStderr(QStringLiteral("错误：--pin 需要 64 位十六进制指纹，收到 %1")
+                            .arg(options.pin));
+            return kExitUsage;
         }
-        return std::nullopt;
     }
 
-    // deviceId 的十六进制前缀。允许短前缀是为了少打字；32 位是完整长度。
-    const QString prefix = text.toLower();
-    if (prefix.size() < 4 || prefix.size() > lanpipe::proto::kDeviceIdBytes * 2)
-        return std::nullopt;
-    for (const QChar c : prefix) {
-        if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f')))
-            return std::nullopt;
+    // 文件来源。大小定不下来的在这里就拒绝——让用户批准一个「不知道多大」的东西
+    // 等于让审批界面失去意义（§5.14）。
+    QList<std::shared_ptr<files::FileSource>> sources;
+    for (qsizetype i = 1; i < options.args.size(); ++i) {
+        const QString path = options.args.at(i);
+        auto source = std::make_shared<files::LocalFileSource>(path);
+        if (!source->size().has_value()) {
+            writeStderr(QStringLiteral("错误：%1 不是一个可读的普通文件").arg(path));
+            return kExitUsage;
+        }
+        sources.append(source);
     }
 
-    target.byDeviceId = true;
-    target.deviceIdPrefix = prefix;
-    return target;
+    const auto identity = loadIdentity();
+    if (!identity.has_value())
+        return kExitFailure;
+
+    auto trust = trust::TrustStore::load();
+    if (!trust.has_value()) {
+        writeStderr(trust.error());
+        return kExitFailure;
+    }
+
+    Settings settings;
+    ensureDeviceName(settings);
+
+    discovery::PeerDirectory directory;
+    discovery::Advertisement browseSelf;
+    browseSelf.name = settings.deviceName();
+    browseSelf.fingerprint = identity->fingerprint().toHex();
+    browseSelf.version = proto::kVersion;
+    // 只找人不被找：发送方没有在监听（与 pair 同）。
+    const std::unique_ptr<discovery::Discovery> discover = startDiscovery(false, browseSelf);
+    std::optional<discovery::PeerConnector> connector;
+
+    SendClient client(*trust);
+
+    const auto tryNextAddress = [&] {
+        if (!connector.has_value())
+            return;
+        const auto next = connector->startNext();
+        if (!next.has_value()) {
+            writeStderr(QStringLiteral("这台设备的每个地址都试过了：\n  %1")
+                            .arg(connector->failureSummary()));
+            QCoreApplication::exit(kExitFailure);
+            return;
+        }
+        writeStdout(QStringLiteral("连接 %1:%2").arg(next->address.toString()).arg(next->port));
+        client.start(QUrl(QStringLiteral("https://%1:%2")
+                              .arg(next->address.toString())
+                              .arg(next->port)),
+                     *identity, settings.deviceName(), sources, expected);
+    };
+
+    const auto connectToPeer = [&](const discovery::PeerDirectory::Peer &peer) {
+        if (connector.has_value())
+            return; // 已经在连了
+        writeStdout(QStringLiteral("发现 %1（%2），%3 个地址")
+                        .arg(trust::displaySafe(peer.name), peer.deviceId.left(8))
+                        .arg(peer.addresses.size()));
+        connector.emplace(peer.addresses, proto::kAddressConnectTimeout);
+        QObject::connect(&*connector, &discovery::PeerConnector::attemptTimedOut,
+                         [&tryNextAddress] { tryNextAddress(); });
+        tryNextAddress();
+    };
+
+    QObject::connect(&directory, &discovery::PeerDirectory::peerAdded, [&](const QString &deviceId) {
+        if (target->byDeviceId && deviceId.startsWith(target->deviceIdPrefix)
+            && directory.peer(deviceId).has_value()) {
+            connectToPeer(*directory.peer(deviceId));
+        }
+    });
+
+    QObject::connect(&client, &SendClient::prepared, [&](const QString &sessionId) {
+        if (connector.has_value())
+            connector->connected(); // 握手过了，撤掉这个地址的时限
+        writeStdout(QStringLiteral("会话 %1，开始传输 %2 个文件")
+                        .arg(sessionId.left(8))
+                        .arg(sources.size()));
+    });
+
+    auto sentPercent = std::make_shared<QHash<QString, int>>();
+    QObject::connect(&client, &SendClient::fileProgress,
+                     [sentPercent](const QString &fileId, quint64 sent, quint64 total) {
+                         if (total == 0)
+                             return;
+                         const int percent = static_cast<int>(sent * 100 / total);
+                         if ((*sentPercent)[fileId] / 10 == percent / 10 && percent < 100)
+                             return;
+                         (*sentPercent)[fileId] = percent;
+                         writeStdout(QStringLiteral("  发 %1  %2%").arg(fileId.left(8)).arg(percent));
+                     });
+
+    QObject::connect(&client, &SendClient::finished,
+                     [&](const SendClient::Result &result) {
+                         // 完全没连上才换地址：收到任何应答都说明这个地址是通的，
+                         // 问题在别处（对方拒绝、没配对、协议不合）。
+                         if (!result.ok && !result.cancelled && connector.has_value()
+                             && !client.peerContacted()) {
+                             connector->failed(result.error);
+                             tryNextAddress();
+                             return;
+                         }
+                         if (result.cancelled) {
+                             writeStderr(QStringLiteral("已取消。对方可能已经收到一部分文件，"
+                                                        "未传完的临时数据由对方清理。"));
+                             QCoreApplication::exit(kExitInterrupted);
+                             return;
+                         }
+                         if (!result.ok) {
+                             writeStderr(result.error);
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
+                         writeStdout(QStringLiteral("传输完成：%1 个文件，%2 字节，已由对方核对。")
+                                         .arg(sources.size())
+                                         .arg(result.totalBytes));
+                         QCoreApplication::exit(kExitOk);
+                     });
+
+    printIdentity(*identity);
+
+    if (!target->byDeviceId) {
+        writeStdout(QStringLiteral("连接 %1:%2").arg(target->host).arg(target->port));
+        client.start(QUrl(QStringLiteral("https://%1:%2").arg(target->host).arg(target->port)),
+                     *identity, settings.deviceName(), sources, expected);
+        return QCoreApplication::exec();
+    }
+
+    constexpr auto kLookupTimeout = std::chrono::seconds(10);
+    writeStdout(QStringLiteral("正在查找 deviceId 以 %1 开头的设备…").arg(target->deviceIdPrefix));
+
+    directory.addSource(discover.get());
+    if (discover->lastError().isEmpty())
+        writeStdout(QStringLiteral("发现后端：%1").arg(discover->backendName()));
+    else
+        writeStderr(QStringLiteral("发现不可用：%1").arg(discover->lastError()));
+
+    for (const auto &peer : directory.peers()) {
+        if (peer.deviceId.startsWith(target->deviceIdPrefix)) {
+            connectToPeer(peer);
+            break;
+        }
+    }
+
+    auto *deadline = new QTimer(&directory);
+    deadline->setSingleShot(true);
+    QObject::connect(deadline, &QTimer::timeout, [&] {
+        if (connector.has_value())
+            return; // 已经在连了，超时由每个地址的时限负责
+        writeStderr(QStringLiteral(
+            "没有发现 deviceId 以 %1 开头的设备。\n"
+            "  可能是组播/广播被过滤、两台设备不在同一网段，或者对方没有在跑 serve。\n"
+            "  也可以直接给地址：lanpipe send <host:port> <文件>")
+                        .arg(target->deviceIdPrefix));
+        QCoreApplication::exit(kExitFailure);
+    });
+    deadline->start(kLookupTimeout);
+
+    return QCoreApplication::exec();
 }
 
 int runPair(const Options &options)
@@ -397,7 +694,7 @@ int runPair(const Options &options)
         return kExitUsage;
     }
 
-    const auto target = parsePairTarget(options.args.first());
+    const auto target = parseTarget(options.args.first());
     if (!target.has_value()) {
         writeStderr(QStringLiteral("错误：目标应当是 deviceId 的十六进制前缀，"
                                    "或者 host:port，收到 %1")

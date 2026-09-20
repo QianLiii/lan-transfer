@@ -9,6 +9,7 @@
 // 与接收方的审批窗口精确相等，两边会同时到期。
 
 #include "identity.h"
+#include "peerpinning.h"
 #include "ping.h"
 #include "trust/truststore.h"
 
@@ -60,7 +61,8 @@ signals:
     void finished(const lanpipe::transfer::PingClient::Result &result);
 
 private:
-    bool adoptPeer(const QSslCertificate &certificate);
+    // 对端已经通过判定：算出本端那半并显示出去（在本端用户输入之前）。
+    void announceOurHalf();
     void onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors);
     void onFinished(QNetworkReply *reply);
     void report(Result result);
@@ -68,10 +70,8 @@ private:
     QNetworkAccessManager *m_manager = nullptr;
     trust::TrustStore &m_trust;
     Identity m_identity;
-    std::optional<Fingerprint> m_expected;
+    PeerPin m_pin; // 身份判定只有一处，与发送方共用
     QString m_cnonce;
-    Fingerprint m_peerFingerprint;
-    QString m_handshakeError;
     SasCode m_code;
     bool m_reported = false;
 };

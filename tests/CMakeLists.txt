@@ -38,6 +38,7 @@ lanpipe_add_test(tst_windnssd)
 lanpipe_add_test(tst_sanitizer)
 lanpipe_add_test(tst_localfiles)
 lanpipe_add_test(tst_receiveservice rawclient.h)
+lanpipe_add_test(tst_sendclient)
 lanpipe_add_test(tst_policy)
 lanpipe_add_test(tst_transfer)
 

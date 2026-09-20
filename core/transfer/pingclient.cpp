@@ -14,7 +14,7 @@
 namespace lanpipe::transfer {
 
 PingClient::PingClient(trust::TrustStore &trust, QObject *parent)
-    : QObject(parent), m_manager(new QNetworkAccessManager(this)), m_trust(trust)
+    : QObject(parent), m_manager(new QNetworkAccessManager(this)), m_trust(trust), m_pin(trust)
 {
     qRegisterMetaType<PingClient::Result>();
 
@@ -27,10 +27,9 @@ void PingClient::start(const QUrl &url, const Identity &identity, const QString 
                        std::optional<Fingerprint> expected)
 {
     m_identity = identity;
-    m_expected = std::move(expected);
-    m_peerFingerprint = {};
+    m_pin.reset();
+    m_pin.setExpected(std::move(expected));
     m_code = {};
-    m_handshakeError.clear();
     m_reported = false;
     m_cnonce = randomHex(proto::kNonceBytes);
 
@@ -51,57 +50,23 @@ void PingClient::start(const QUrl &url, const Identity &identity, const QString 
     connect(reply, &QNetworkReply::finished, this, [this, reply] { onFinished(reply); });
 }
 
-bool PingClient::adoptPeer(const QSslCertificate &certificate)
+void PingClient::announceOurHalf()
 {
-    const auto fingerprint = net::peerFingerprint(certificate);
-    if (!fingerprint.has_value()) {
-        m_handshakeError = fingerprint.error();
-        return false;
-    }
+    if (!m_code.shown.isEmpty())
+        return; // 已经报过
 
-    if (m_expected.has_value() && *fingerprint != *m_expected) {
-        m_handshakeError = QStringLiteral("对端指纹与预期不符：观察到 %1，预期 %2")
-                               .arg(fingerprint->shortForm(), m_expected->shortForm());
-        return false;
-    }
-
-    // 信任库里记的指纹与这次看到的不符。注意 deviceId 本身就是指纹的截断，
-    // 所以这条只在截断前缀相同、后面不同时才可能触发——它是一道廉价的兜底，
-    // 不是「设备换了密钥」的检测（那种情况会表现为一个全新的、未配对的 deviceId）。
-    const QString deviceId = deviceIdFrom(*fingerprint);
-    if (m_trust.identityChanged(deviceId, fingerprint->toHex())) {
-        m_handshakeError =
-            QStringLiteral("已配对设备的指纹与记录不符（%1）：请删除配对后重新配对")
-                .arg(deviceId.left(8));
-        return false;
-    }
-
-    m_peerFingerprint = *fingerprint;
-    // 输入只有两个指纹与 cnonce，所以这一刻就能算出全部 12 位并显示本端那半，
+    // 参与量只有两个指纹与 cnonce，所以这一刻就能算出全部 12 位并显示本端那半，
     // 不必等响应（§4 配对：接收方在响应之前就要看到它）。
     m_code = sasCode(SasRole::Sender,
-                     computeSas(m_identity.fingerprint(), m_peerFingerprint, m_cnonce));
+                     computeSas(m_identity.fingerprint(), m_pin.observed(), m_cnonce));
     emit peerAdopted(m_code);
-    return true;
 }
 
 void PingClient::onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors)
 {
-    const QList<QSslError> tolerated = net::toleratedHandshakeErrors(errors);
-    if (tolerated.size() != errors.size()) {
-        m_handshakeError = QStringLiteral("TLS 握手被拒绝：%1").arg(net::describeErrors(errors));
-        reply->abort();
-        return;
-    }
-
-    // 证书取自错误本身：此刻 reply->sslConfiguration() 还停留在请求里带的那一份，
-    // 不含对端证书。判定失败就 abort——绝不放行一个没通过指纹比对的对端。
-    if (!adoptPeer(net::certificateFromErrors(errors))) {
-        reply->abort();
-        return;
-    }
-
-    reply->ignoreSslErrors(tolerated);
+    m_pin.handleSslErrors(reply, errors);
+    if (m_pin.accepted())
+        announceOurHalf();
 }
 
 void PingClient::onFinished(QNetworkReply *reply)
@@ -110,11 +75,13 @@ void PingClient::onFinished(QNetworkReply *reply)
 
     Result result;
 
-    if (!m_handshakeError.isEmpty()) {
-        result.error = m_handshakeError;
+    // 握手期被拒（错误已记在 pin 里）或握手没触发 sslErrors 时的兜底判定。
+    if (!m_pin.adoptFromReply(reply)) {
+        result.error = m_pin.error();
         report(result);
         return;
     }
+    announceOurHalf();
 
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray body = reply->readAll();
@@ -131,14 +98,6 @@ void PingClient::onFinished(QNetworkReply *reply)
         return;
     }
 
-    // 握手没触发 sslErrors 的路径在这里补上身份判定。
-    if (!m_peerFingerprint.isValid()
-        && !adoptPeer(reply->sslConfiguration().peerCertificate())) {
-        result.error = m_handshakeError;
-        report(result);
-        return;
-    }
-
     const auto info = pingInfoFromJson(body);
     if (!info.has_value()) {
         result.error = info.error();
@@ -148,16 +107,16 @@ void PingClient::onFinished(QNetworkReply *reply)
 
     // 响应里的 fp 只用来核对：对端在 JSON 里写的和它握手出示的必须是同一把公钥。
     // 不一致说明对端有 bug 或有人在改包，两种都不该继续。
-    if (info->fingerprint != m_peerFingerprint) {
+    if (info->fingerprint != m_pin.observed()) {
         result.error = QStringLiteral("响应里的指纹与握手所见不符：%1 vs %2")
-                           .arg(info->fingerprint.shortForm(), m_peerFingerprint.shortForm());
+                           .arg(info->fingerprint.shortForm(), m_pin.observed().shortForm());
         report(result);
         return;
     }
 
     result.ok = true;
     result.info = *info;
-    result.peerFingerprint = m_peerFingerprint;
+    result.peerFingerprint = m_pin.observed();
     // 发送方指纹在前、接收方指纹在后（§4）。两个都取自本次握手。
     // 发送方取前半显示、要求输入后半——这一半在 peerAdopted 时就已经显示出去了。
     result.code = m_code;
