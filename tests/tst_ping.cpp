@@ -36,7 +36,9 @@ private:
     QTemporaryDir m_senderDir;
     Identity m_identity;  // 接收方
     Identity m_sender;
-    Settings m_settings;
+    // 必须给路径：默认构造走的是 QSettings 的原生用户位置，测试会写进开发者真实的
+    // ~/.config/lanpipe/。
+    Settings m_settings{m_settingsDir.filePath(QStringLiteral("settings.ini"))};
     std::expected<trust::TrustStore, QString> m_trust;
     HttpServer m_server;
     PingService *m_service = nullptr;
