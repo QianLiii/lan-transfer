@@ -123,6 +123,9 @@ QString usageText()
         "用法：\n"
         "  lanpipe serve [--port <n>]              作为接收方监听：接收文件、应答配对\n"
         "  lanpipe send <目标> <文件>...            发送文件给一台**已配对**的设备\n"
+        "  lanpipe devices                        列出已配对与已屏蔽的设备\n"
+        "  lanpipe block <deviceId>               屏蔽一台设备（前缀即可）：它再也弹不出审批\n"
+        "  lanpipe unblock <deviceId>             解除屏蔽（配对关系不受影响）\n"
         "  lanpipe pair <目标> [--pin <fp>]        与目标配对：两端各显示 6 位、各输入对方的\n"
         "                                          目标可以是 deviceId 的十六进制前缀\n"
         "                                          （先广播发现），或 host:port（手工地址）\n"
@@ -389,15 +392,23 @@ int runServe(const Options &options)
                                 .arg(trust::displaySafe(file.name))
                                 .arg(file.size));
             }
-            writeStdout(QStringLiteral("接收？（y/N）"));
+            writeStdout(QStringLiteral("接收？（y = 接受 / n = 拒绝 / b = 拒绝并屏蔽）"));
 
             // 与配对同理：这一刻整个服务停在这里，所以审批窗口的计时器在 CLI 下
             // 不会响（事件循环没在转）。GUI 版（M5）用异步输入才真正生效。
             QTextStream in(stdin);
             const QString answer = in.readLine().trimmed();
-            transfers.submitApproval(answer.startsWith(QLatin1Char('y'), Qt::CaseInsensitive)
-                                     || answer.startsWith(QLatin1Char('Y')));
+            if (answer.startsWith(QLatin1Char('b'), Qt::CaseInsensitive))
+                transfers.submitBlock();
+            else
+                transfers.submitApproval(answer.startsWith(QLatin1Char('y'), Qt::CaseInsensitive));
         });
+
+    QObject::connect(&transfers, &transfer::ReceiveService::peerBlocked,
+                     [](const QString &deviceId, const QString &name) {
+                         writeStdout(QStringLiteral("已屏蔽 %1（%2）：它之后再来的请求会被直接拒掉")
+                                         .arg(deviceId.left(8), trust::displaySafe(name)));
+                     });
 
     // 进度按 10% 一档打：一块一块地打，1 MB 就是两百多行。
     auto lastReportedPercent = std::make_shared<QHash<QString, int>>();
@@ -684,6 +695,131 @@ int runSend(const Options &options)
     return QCoreApplication::exec();
 }
 
+// 设备 id 的前缀：只认小写十六进制，长度 4 到 32。允许短前缀是为了少打字。
+bool isDeviceIdPrefix(const QString &text)
+{
+    if (text.size() < 4 || text.size() > lanpipe::proto::kDeviceIdBytes * 2)
+        return false;
+    for (const QChar c : text) {
+        if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f')))
+            return false;
+    }
+    return true;
+}
+
+// 在前缀能唯一确定一台设备时返回它的完整 id。多义或找不到都返回空——多义时把候选
+// 打出来，让用户自己补全，而不是替他猜。
+std::optional<QString> resolveDeviceId(const QStringList &candidates, const QString &prefix)
+{
+    QStringList matches;
+    for (const QString &id : candidates) {
+        if (id.startsWith(prefix))
+            matches.append(id);
+    }
+
+    if (matches.size() == 1)
+        return matches.first();
+    if (matches.isEmpty()) {
+        writeStderr(QStringLiteral("没有以 %1 开头的设备").arg(prefix));
+        return std::nullopt;
+    }
+    writeStderr(QStringLiteral("%1 匹配到多台设备，请补全：\n  %2")
+                    .arg(prefix, matches.join(QStringLiteral("\n  "))));
+    return std::nullopt;
+}
+
+int runDevices(const Options &options)
+{
+    Q_UNUSED(options);
+    using namespace lanpipe;
+
+    auto trust = trust::TrustStore::load();
+    if (!trust.has_value()) {
+        writeStderr(trust.error());
+        return kExitFailure;
+    }
+
+    writeStdout(QStringLiteral("已配对（%1）：").arg(trust->entries().size()));
+    for (const trust::TrustStore::Entry &entry : trust->entries()) {
+        writeStdout(QStringLiteral("  %1  %2  指纹 %3…")
+                        .arg(entry.deviceId.left(8), trust::displaySafe(entry.name),
+                             entry.fingerprint.left(16)));
+    }
+
+    const QList<trust::TrustStore::BlockedEntry> blocked = trust->blocked();
+    writeStdout(QStringLiteral("已屏蔽（%1）：").arg(blocked.size()));
+    for (const trust::TrustStore::BlockedEntry &entry : blocked)
+        writeStdout(QStringLiteral("  %1  %2").arg(entry.deviceId.left(8),
+                                                   trust::displaySafe(entry.name)));
+
+    return kExitOk;
+}
+
+int runBlock(const Options &options, bool unblock)
+{
+    using namespace lanpipe;
+
+    if (options.args.isEmpty()) {
+        writeStderr(QStringLiteral("错误：需要一个 deviceId 或其前缀"));
+        return kExitUsage;
+    }
+
+    const QString prefix = options.args.first().toLower();
+    if (!isDeviceIdPrefix(prefix)) {
+        writeStderr(QStringLiteral("错误：%1 不是 deviceId 的十六进制前缀").arg(options.args.first()));
+        return kExitUsage;
+    }
+
+    auto trust = trust::TrustStore::load();
+    if (!trust.has_value()) {
+        writeStderr(trust.error());
+        return kExitFailure;
+    }
+
+    // 候选：已配对的 + 已屏蔽的，去重——一台设备可以同时出现在两边（屏蔽一台已配对
+    // 设备时就是如此），重复的候选会让前缀变成「多义」而拒绝解析。
+    QStringList candidates;
+    for (const trust::TrustStore::Entry &entry : trust->entries())
+        candidates.append(entry.deviceId);
+    for (const trust::TrustStore::BlockedEntry &entry : trust->blocked()) {
+        if (!candidates.contains(entry.deviceId))
+            candidates.append(entry.deviceId);
+    }
+
+    std::optional<QString> deviceId;
+    if (prefix.size() == proto::kDeviceIdBytes * 2)
+        deviceId = prefix; // 完整长度不需要查表
+    else
+        deviceId = resolveDeviceId(candidates, prefix);
+
+    if (!deviceId.has_value())
+        return kExitFailure;
+
+    QString error;
+    if (unblock) {
+        if (!trust->unblock(*deviceId, &error)) {
+            writeStderr(error);
+            return kExitFailure;
+        }
+        writeStdout(QStringLiteral("已解除屏蔽 %1").arg(deviceId->left(8)));
+        return kExitOk;
+    }
+
+    trust::TrustStore::BlockedEntry entry;
+    entry.deviceId = *deviceId;
+    entry.blockedAt = QDateTime::currentDateTimeUtc();
+    if (const auto known = trust->find(*deviceId))
+        entry.name = known->name;
+
+    if (!trust->block(entry, &error)) {
+        writeStderr(error);
+        return kExitFailure;
+    }
+    writeStdout(QStringLiteral("已屏蔽 %1：它之后的请求会被直接拒掉，不再弹审批")
+                    .arg(deviceId->left(8)));
+    return kExitOk;
+}
+
 int runPair(const Options &options)
 {
     using namespace lanpipe;
@@ -962,6 +1098,12 @@ int main(int argc, char *argv[])
         return runSend(options);
     if (options.command == QLatin1String("pair"))
         return runPair(options);
+    if (options.command == QLatin1String("devices"))
+        return runDevices(options);
+    if (options.command == QLatin1String("block"))
+        return runBlock(options, /*unblock=*/false);
+    if (options.command == QLatin1String("unblock"))
+        return runBlock(options, /*unblock=*/true);
 
     writeStderr(QStringLiteral("错误：未知子命令 %1").arg(options.command));
     writeStderr(usageText());
