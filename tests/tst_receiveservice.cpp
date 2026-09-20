@@ -652,6 +652,48 @@ private slots:
         QVERIFY(!QDir(tempDirFor(sessionId)).exists());
     }
 
+    // 对端在传输中途消失之后，那条连接会被 deleteLater()。此时任何拆除路径都不能
+    // 再去碰它——曾经这里是一个 use-after-free，症状是「对端断连五分钟之后接收方
+    // 自己崩掉」（TTL 到点拆除时踩了那条已经销毁的连接）。
+    void teardownAfterTheUploadConnectionDiedIsSafe()
+    {
+        m_service->setSessionTtl(std::chrono::milliseconds(80));
+        const QString sessionId = acceptSingleFile(64 * 1024, QStringLiteral("died.bin"));
+
+        {
+            RawClient client(rawclient::withCertificate(m_sender), this);
+            client.connectTo(m_port);
+            client.send("PUT " + uploadTarget(sessionId, kFileId)
+                        + " HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n");
+            client.send(QByteArray(4096, 'x'));
+            QTest::qWait(200);
+            client.abort(); // 硬断
+        }
+
+        QTRY_VERIFY(!m_service->hasActiveSession()); // TTL 到点 → 拆除 → 不能崩
+        QVERIFY(!QDir(tempDirFor(sessionId)).exists());
+    }
+
+    void cancelAfterTheUploadConnectionDiedIsSafe()
+    {
+        const QString sessionId = acceptSingleFile(64 * 1024, QStringLiteral("died.bin"));
+
+        {
+            RawClient client(rawclient::withCertificate(m_sender), this);
+            client.connectTo(m_port);
+            client.send("PUT " + uploadTarget(sessionId, kFileId)
+                        + " HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n");
+            client.send(QByteArray(4096, 'x'));
+            QTest::qWait(200);
+            client.abort();
+        }
+
+        QTest::qWait(100); // 让那条连接的 finished/deleteLater 走完
+        m_service->cancelActive();
+        QTRY_VERIFY(!m_service->hasActiveSession());
+        QVERIFY(!QDir(tempDirFor(sessionId)).exists());
+    }
+
     void sessionTtlExpiryDeletesTempData()
     {
         m_service->setSessionTtl(std::chrono::milliseconds(50));

@@ -86,6 +86,9 @@ private:
     ReceiveSession *requireSession(http::HttpConnection &connection, const QString &sessionId);
 
     void commitUpload(http::HttpConnection &connection, const QString &fileId);
+    // 忘掉这次 PUT 的全部状态，包括那个连接指针。**每一条能结束 PUT 的路径都必须
+    // 走它**：连接在 finished 之后会被 deleteLater()，留着指针就是悬垂。
+    void releaseUpload();
     void discardUpload();
 
     // 拆除会话：停表、断在途的 PUT、删临时数据。幂等。

@@ -261,9 +261,11 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
     }
 
     // 净化先于任何路径构造，也先于审批：用户在框里看到的名字必须就是落地的名字。
+    TransferRequest parsed = *request; // 这份副本用来把名字换成净化后的，供显示
     QList<ReceiveSession::Entry> entries;
     entries.reserve(request->files.size());
-    for (const TransferFile &file : request->files) {
+    for (qsizetype i = 0; i < request->files.size(); ++i) {
+        const TransferFile &file = request->files.at(i);
         const auto sanitized = trust::sanitizeFilename(file.name);
         if (!sanitized.has_value()) {
             respondError(connection, Status::BadRequest,
@@ -282,6 +284,7 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
         entry.declared = file;
         entry.sanitized = *sanitized;
         entries.append(entry);
+        parsed.files[i].name = *sanitized; // 审批界面显示的是要落地的那个名字
     }
 
     if (m_session) {
@@ -307,7 +310,7 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
     }
 
     m_pendingApproval = &connection;
-    m_pendingRequest = *request;
+    m_pendingRequest = parsed;
     m_pendingEntries = std::move(entries);
     m_pendingPeer = peer;
     m_pendingSessionId = sessionId;
@@ -487,6 +490,8 @@ void ReceiveService::handleUpload(http::HttpConnection &connection)
 
     const quint64 expected = entry->declared.size;
     connection.readBody(expected, [this, &connection, fileId, expected](QByteArrayView chunk) {
+        if (!m_uploadDevice)
+            return false; // 状态已经被收走了（拆除、失败）：按放弃处理，别再往下写
         const qint64 written = m_uploadDevice->write(chunk.data(), chunk.size());
         if (written != chunk.size()) {
             // 写盘失败（多半是空间不够）：给一个可读的状态码再关连接，而不是闷声断连。
@@ -506,40 +511,44 @@ void ReceiveService::commitUpload(http::HttpConnection &connection, const QStrin
     ReceiveSession *session = m_session.get();
     if (!session || session->sessionId().isEmpty()) {
         respondError(connection, Status::Gone, QStringLiteral("会话已结束"));
+        discardUpload();
         return;
     }
 
     ReceiveSession::Entry *entry = session->find(fileId);
-    if (!entry || !m_uploadSink) {
-        respondError(connection, Status::Conflict, QStringLiteral("上传状态已失效"));
+
+    // 失败时除了回答，还要把这个文件从「在传」状态里放出来——否则它再也传不了
+    // （重传会拿到「该文件正在传输中」）。
+    const auto failUpload = [&](Status status, const QString &reason) {
+        if (entry)
+            entry->inFlight = false;
+        respondError(connection, status, reason);
         discardUpload();
+    };
+
+    if (!entry || !m_uploadSink) {
+        failUpload(Status::Conflict, QStringLiteral("上传状态已失效"));
         return;
     }
 
     if (m_uploadWritten != entry->declared.size) {
-        respondError(connection, Status::Conflict,
-                     QStringLiteral("实际收到的字节数（%1）与批准的（%2）不符")
-                         .arg(m_uploadWritten)
-                         .arg(entry->declared.size));
-        discardUpload();
+        failUpload(Status::Conflict,
+                   QStringLiteral("实际收到的字节数（%1）与批准的（%2）不符")
+                       .arg(m_uploadWritten)
+                       .arg(entry->declared.size));
         return;
     }
 
     // 到这里才改名：文件在**自己的 PUT 返回 200 的那一刻**就位（§5.2）。
     if (!session->commitFile(*entry, *m_uploadSink)) {
-        respondError(connection, Status::InternalError, QStringLiteral("无法把文件改名到接收目录"));
-        discardUpload();
+        failUpload(Status::InternalError, QStringLiteral("无法把文件改名到接收目录"));
         return;
     }
 
     const QString finalPath = entry->finalPath;
     const quint64 bytes = entry->committedBytes;
 
-    m_upload = nullptr;
-    m_uploadFileId.clear();
-    m_uploadDevice.reset();
-    m_uploadSink.reset();
-    m_uploadWritten = 0;
+    releaseUpload();
     armSessionTtl();
 
     QJsonObject object;
@@ -550,14 +559,20 @@ void ReceiveService::commitUpload(http::HttpConnection &connection, const QStrin
     emit fileCommitted(fileId, finalPath, bytes);
 }
 
-void ReceiveService::discardUpload()
+void ReceiveService::releaseUpload()
 {
-    if (m_uploadSink) {
-        m_uploadSink->discard();
-        m_uploadSink.reset();
-    }
+    m_upload = nullptr;
+    m_uploadFileId.clear();
+    m_uploadSink.reset();
     m_uploadDevice.reset();
     m_uploadWritten = 0;
+}
+
+void ReceiveService::discardUpload()
+{
+    if (m_uploadSink)
+        m_uploadSink->discard();
+    releaseUpload();
 }
 
 void ReceiveService::handleComplete(http::HttpConnection &connection)
@@ -618,14 +633,18 @@ void ReceiveService::teardown(const QString &sessionId, bool completed)
 
     // 先把会话摘下来：abort() 是同步把 finished 送回来的，那些槽不能再碰它。
     std::unique_ptr<ReceiveSession> session = std::move(m_session);
+
+    // 连接指针要先取出来再清状态：清完之后 abort() 触发的那次 finished 会因为
+    // m_upload 已经为空而直接返回（它不该再去动已经拆掉的东西）。
+    http::HttpConnection *upload = m_upload;
     discardUpload();
-    http::HttpConnection *upload = std::exchange(m_upload, nullptr);
-    m_uploadFileId.clear();
 
     if (upload)
         upload->abort(); // 取消不回 410、不发响应，直接关（§5.5）
 
     session->destroyTempData();
+    // 顺带收掉空掉的根目录：不然用户的接收目录里永远留一个 .lanpipe-tmp 空壳。
+    QDir().rmdir(QDir(m_receiveDir).filePath(QString::fromLatin1(proto::kTempDirName)));
     emit sessionFinished(sessionId, completed);
 }
 
