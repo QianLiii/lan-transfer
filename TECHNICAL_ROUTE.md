@@ -6,6 +6,11 @@ build* (what is finished, what is verified, what is not) see `README.md` and
 `docs/handover.md`; §9's table now carries a status column. Supersedes draft 1
 (`TECHNICAL_ROUTE.md.orig-draft1`).
 
+Revised 2026-09-20: `deviceId` is gone from the wire format. Advertisements, the `/ping`
+response and `prepare` carry the fingerprint only; each side truncates it locally. A
+transmitted id is an unauthenticated claim that every handler must remember to check — the
+field's absence deletes that check class (§3, §4 Transport, §5).
+
 ## 0. Decision snapshot
 
 | Topic | Decision |
@@ -252,10 +257,9 @@ a platform shim.
    hand. (Windows Firewall rules are per-application, not per-port, so the override is rarely
    needed.)
 
-2. TXT records: `id`, `fp`, `name`, `ver`.
-   - `id` — truncated form of the device fingerprint (§4). The full value comes from `/ping`.
-     Do not put 64 hex characters in TXT.
+2. TXT records: `fp`, `name`, `ver`.
    - `fp` — the SPKI fingerprint, as an advertisement hint only. **It is never a trust anchor.**
+     `deviceId` is not transmitted: the receiving side truncates this value itself (§3, last note).
    - `name` — arbitrary UTF-8. A single TXT string is capped at 255 bytes: escape and truncate.
    - `ver` — protocol version, integer. A major mismatch is refused with an explicit message.
 
@@ -299,8 +303,10 @@ a platform shim.
 8. The user-visible device name is the TXT `name`, not the mDNS instance name — system DNS-SD
    renames conflicting instances automatically.
 
-`deviceId` = truncated SPKI fingerprint (§4). Two devices never collide, and reinstalling keeps
-identity as long as the key survives.
+`deviceId` = truncated SPKI fingerprint (§4). It is derived locally — from the handshake
+certificate, or from an advertised fingerprint — and is never a field on the wire. There is
+therefore no claimed value to compare against a certificate, and no way for a peer to name
+itself. Two devices never collide, and reinstalling keeps identity as long as the key survives.
 
 ## 4. Identity and security
 
@@ -325,10 +331,11 @@ TLS 1.2+ with self-signed certificates and **mutual authentication**:
 - The server requires a client certificate. `QSslConfiguration::peerVerifyMode()` defaults to
   `AutoVerifyPeer`, which on a server behaves as `QueryPeer` — it *requests* a certificate and
   accepts a client that sends none. Set `VerifyPeer` explicitly.
-- The server recomputes `deviceId` from the client certificate's public key and compares it with
-  the `sender.id` claimed in `prepare`. `deviceId` being derived from the public key is what
-  makes the identity self-certifying; without this check, the sender identity is unauthenticated
-  JSON and the whole receive policy (§4, receive policy) is decorative.
+- **The sender identity is never claimed, only resolved.** `prepare` carries no `sender.id`; the
+  server takes the identity from the client certificate, which the connection layer already
+  resolved. A transmitted id would be unauthenticated JSON that every handler had to remember to
+  compare against the certificate — a check that is missing from one handler fails silently.
+  Without the field there is nothing to compare and nothing to forget.
 - Fail closed. A missing peer certificate, or a public key that cannot be parsed, is a
   rejection — never a skipped check.
 - **The identity is resolved once, in the connection layer**, right after the handshake and before
@@ -469,15 +476,17 @@ End-to-end sequence: `docs/sequence-diagram.puml` (regenerated to match this rev
 ```
 POST /api/v1/ping                                    (JSON)
      { cnonce, name }
-     → 200 { "deviceId", "name", "ver", "fp", "reachable" }   receiver verified too
+     → 200 { "name", "ver", "fp", "reachable" }               receiver verified too
+       (no deviceId: the sender derives it from the fingerprint it saw in this handshake)
      → 403                                                    receiver's user typed a mismatch
      → 409                                                    another pairing is already in progress
      → 504                                                    no user input within 2 min
      Note: the receiver answers only after its user has typed — step 3 in §4 pairing.
 
 POST /api/v1/prepare                                    (JSON)
-     { sender: { id, name }, files: [ { id, name, size, mime } ], totalSize }
-     Note: no nonce here — the SAS was settled at /ping (§4).
+     { sender: { name }, files: [ { id, name, size, mime } ], totalSize }
+     Note: no nonce here — the SAS was settled at /ping (§4) — and no sender id either:
+     the identity is the client certificate (§4 Transport).
      → 200 { sessionId }                     accepted
      → 403 { reason }                        rejected by user or policy
      → 409 { reason, retryAfter }            another session is active
@@ -681,7 +690,7 @@ desktop 1.0 is in daily use, and only if §1.2 held. Sizes: S ≤ 2 days, M ≤ 
 | M0 | Skeleton: core layout, CMake (C++23), OpenSSL bundling, QtTest, headless CLI harness (`serve` / `send` / `pair`, with `--yes` and `--pin` for non-interactive CI), CI (Linux + Windows, plus a compile-and-`ctest` macOS job as a portability canary) | **DONE** | S | Core builds and `ctest` passes on all three; CLI runs headless |
 | M1 | Identity + TLS + receive server: cert generation via OpenSSL, SPKI fingerprint, keystore, `QTcpServer` + `QSslServer` + our HTTP parser (§5.15 subset), mutual TLS, `/ping` with nonces | **DONE** | M | `curl --cert --key` reaches `/ping`; a client without a certificate is rejected; fingerprint prints to console. Parser negative tests: `Transfer-Encoding: chunked` → 400 + close with the body never decoded; duplicate `Content-Length` → 400; malformed or overflowing `Content-Length` → 400; header block beyond the caps → 400; a body exceeding the declared size is cut off mid-stream; a client that stalls after the headers is closed by the idle timeout |
 | M2 | Discovery: `Discovery` interface, system DNS-SD backend, UDP broadcast fallback, `PeerDirectory` with address sets | **PARTIAL** | M | Two headless instances on **two real machines** discover each other; `dns-sd` / `avahi-browse` sees the service; with mDNS disabled, broadcast still finds peers; a wrong-first-address case falls back within the connect timeout. **The Windows DNS-SD path cannot be accepted in CI**: GitHub runners resolve nothing over mDNS, so `tst_windnssd` skips there (`SKIP_RETURN_CODE`, visible as `***Skipped`) and the round trip is accepted on a real Windows desktop. The Linux/Avahi path *is* exercised in CI. |
-| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | not started | M | A client whose certificate does not match the `sender.id` claimed in `prepare` is rejected (moved here from M1: `/ping` carries no claim to compare against); 1 GB desktop→desktop transfers correctly; cancel from either side leaves no temp data; 10 GB stays flat in memory; disk-full returns 507; a retried `PUT` does not corrupt; a killed peer times out instead of hanging |
+| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | not started | M | The sender identity is taken from the client certificate alone — `prepare` carries no id to compare against (§4 Transport); 1 GB desktop→desktop transfers correctly; cancel from either side leaves no temp data; 10 GB stays flat in memory; disk-full returns 507; a retried `PUT` does not corrupt; a killed peer times out instead of hanging |
 | M4 | Pairing + policy: nonce SAS, trust store, auto-accept rules, block list, rate limiting, collision naming, filename sanitizer | **PARTIAL** | M | Via CLI harness: unknown sender → both sides show matching codes → paired → silent accept; a peer whose fingerprint changed is rejected; every hostile-filename vector is rejected; two concurrent `prepare`s → 409 |
 | M5 | QML frontend — Send / Receive / Devices / Pairing / Settings on the existing core models; no core changes | not started | M | Full desktop flow via UI: discover, pair, transfer with progress; core untouched |
 | M6 | Desktop 1.0: settings, history, error paths, installers, firewall hint, diagnostics export. No notarization, no store signing — local use only | not started | S–M | Windows and Linux installable and transferring in daily use |
@@ -699,7 +708,7 @@ Every risk maps to at least one acceptance criterion above; a risk with no test 
 | Risk | Impact | Mitigation | Tested at |
 |---|---|---|---|
 | HTTP parser defects (our code now) | Corruption, smuggling, crash | Closed subset (§5.15): `Content-Length` framing only, one request per connection, no chunked/compression/header-echo; negative tests in M1 | M1, M3 |
-| Sender identity unchecked | Paired-peer impersonation; the whole receive policy collapses | Mutual TLS + recomputed `deviceId` + fail-closed | M1, M4 |
+| Sender identity unchecked | Paired-peer impersonation; the whole receive policy collapses | Mutual TLS + identity resolved from the certificate only, no claimed id on the wire + fail-closed | M1, M4 |
 | Large-file memory blowup | OOM on phones | Fixed-size chunks; no buffering anywhere in the path | M3 (10 GB flat) |
 | Half-open connections | Transfers hang forever with no error | Keepalive, idle timeout, per-address connect timeout | M3 |
 | Wrong address chosen for a multi-homed peer | 30–75 s stalls, apparent failures | Address sets + short per-address timeout + ordered fallback | M2, M3 |

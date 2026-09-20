@@ -13,10 +13,10 @@ actor       "Receiver user" as V
 
 == Discovery (background, both apps run the same logic) ==
 
-R -> N : announce _lanpipe._tcp\nSRV = HTTPS port (ephemeral)\nTXT = id / fp / name / ver
+R -> N : announce _lanpipe._tcp\nSRV = HTTPS port (ephemeral)\nTXT = fp / name / ver
 note right of R : re-announce on start, on interface change,\nand for TTL refresh
 S -> N : browse (PTR _lanpipe._tcp.local)
-N --> S : deviceId, fp (hint), name, ver, address set
+N --> S : fp (hint), name, ver, address set\n(deviceId is derived locally from fp)
 S -> S : PeerDirectory upsert\ndedup by deviceId, merge addresses across sources,\nlastSeen per address
 note over S, R
   System DNS-SD per platform (Avahi / Windows Dnssd / Network.framework / NsdManager);
@@ -41,7 +41,7 @@ note right of S
 end note
 S -> R : POST /api/v1/ping\n{ cnonce, name } — POST so the receiver's user can see who is asking
 R -> R : verifies its user's typed half, then answers
-R --> S : 200 { deviceId, name, ver, fp, reachable } — receiver verified too
+R --> S : 200 { name, ver, fp, reachable } — receiver verified too
 S -> S : ver check — major mismatch aborts with an explicit message
 S -> S : SAS = H(fp_A ‖ fp_B ‖ cnonce)\nfp = the certificates actually observed in this handshake\n12 digits = first 8 bytes big-endian mod 10^12, zero-padded
 R -> R : same computation, same inputs
@@ -71,7 +71,7 @@ S -> S : asks its user for the receiver's half, compares, writes the trust store
 
 U -> S : pick file(s) (FileSource), pick receiver
 S -> R : TLS handshake (new connection)
-S -> R : POST /api/v1/prepare\n{ sender{id,name}, files[{id,name,size,mime}], totalSize }
+S -> R : POST /api/v1/prepare\n{ sender{name}, files[{id,name,size,mime}], totalSize }\n(no sender id — the identity is the client certificate)
 alt sender paired on the receiver
   R -> R : policy: auto-accept, notification only
   R --> S : 200 { sessionId }
