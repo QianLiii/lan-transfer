@@ -94,11 +94,12 @@ private slots:
         QCOMPARE(landed.readAll(), QByteArray("hello"));
     }
 
-    // 数据在 commit 之前不出现在接收目录里，临时路径里也没有那个名字。
+    // 数据在 commit 之前不出现在接收目录里，临时目录里也没有那个名字。
     //
-    // 只断言这两条不变量，**不**断言临时目录里恰好有几个文件：QSaveFile 把数据暂存在
-    // 哪儿是它的实现细节，各平台还不一样——Linux 上用匿名临时文件（readdir 都看不见），
-    // Windows 上会在同目录建一个可见的临时文件。
+    // 只断言这两条不变量，**不**去数临时目录里有什么：QSaveFile 把数据暂存在哪儿、
+    // 那个临时文件叫什么，是它的实现细节，而且随平台不同——Linux 上它用匿名临时文件
+    // （readdir 都看不见），其它平台按文档是「在目标同目录建一个具名文件」，
+    // 名字未必由我们给的模板拼出来。测这些等于测 Qt。
     void sinkKeepsDataOutOfSightBeforeCommit()
     {
         LocalFileSink sink(m_dir.path(), kSessionId, kFileId, QStringLiteral("photo.jpg"),
@@ -109,14 +110,15 @@ private slots:
 
         QVERIFY(!QFile::exists(QDir(m_dir.path()).filePath(QStringLiteral("photo.jpg"))));
 
-        // 临时目录里的每一个条目都只能由 id 拼出来（§5.7：文件名不参与路径构造）。
+        // §5.7：文件名不参与任何路径构造。所以临时目录里不该出现那个名字的踪影。
         const QStringList inTemp =
-            QDir(sink.tempDir()).entryList(QDir::Files | QDir::Hidden | QDir::System);
+            QDir(sink.tempDir()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System);
         for (const QString &entry : inTemp) {
-            QVERIFY2(entry.startsWith(kFileId),
-                     qPrintable(QStringLiteral("临时目录里出现了不是由 id 拼出来的条目：%1（全部：%2）")
+            QVERIFY2(!entry.contains(QStringLiteral("photo")),
+                     qPrintable(QStringLiteral("目标名泄漏进了临时目录：%1（全部：%2）")
                                     .arg(entry, inTemp.join(QStringLiteral(", ")))));
         }
+        // 我们自己写的那份元数据必须在。
         QVERIFY(QFile::exists(QDir(sink.tempDir()).filePath(kFileId + QStringLiteral(".part.meta"))));
 
         QVERIFY(sink.commit());
@@ -170,13 +172,21 @@ private slots:
 
         LocalFileSink sink(dir.path(), kSessionId, kFileId, QStringLiteral("photo.jpg"),
                            kFingerprint, 3);
-        const auto device = sink.open();
+        auto device = sink.open();
         QVERIFY(device != nullptr);
         writeAll(device.get(), QByteArray("abc"));
 
         sink.discard();
+        // 设备的销毁也是收尾的一部分：cancelWriting() 只是让 commit() 丢弃，
+        // 具名的临时文件要到 QSaveFile 析构时才真的从盘上消失（Linux 用匿名临时
+        // 文件，所以这一步在那边看不出来）。
+        device.reset();
+
         QVERIFY(!QFile::exists(QDir(dir.path()).filePath(QStringLiteral("photo.jpg"))));
-        QVERIFY(QDir(sink.tempDir()).entryList(QDir::Files).isEmpty());
+        const QStringList left = QDir(sink.tempDir()).entryList(QDir::Files | QDir::Hidden);
+        QVERIFY2(left.isEmpty(),
+                 qPrintable(QStringLiteral("discard 之后还有残留：%1")
+                                .arg(left.join(QStringLiteral(", ")))));
     }
 
     // §5.6：重传要从零开始，不能把两次的字节接在一起。QSaveFile 未 commit 就析构

@@ -128,9 +128,12 @@ private:
 
     // 有返回值的辅助函数里不能用 QVERIFY/QCOMPARE——它们展开成 `return;`。
     // 这里用 qWaitFor（返回 bool）+ qFail（不返回），失败路径自己收尾。
+    //
+    // 15 秒而不是 QtTest 默认的 5 秒：每个用例都要走一次真的 TLS 往返，而 CI 的
+    // macOS 机器是共享的、慢得多。
     static bool waitFor(std::function<bool()> predicate)
     {
-        return QTest::qWaitFor(std::move(predicate), 5000);
+        return QTest::qWaitFor(std::move(predicate), 15000);
     }
 
     static void fail(const QString &why)
@@ -749,8 +752,9 @@ private slots:
     // 自己崩掉」（TTL 到点拆除时踩了那条已经销毁的连接）。
     void teardownAfterTheUploadConnectionDiedIsSafe()
     {
-        m_service->setSessionTtl(std::chrono::milliseconds(80));
+        m_service->setSessionTtl(std::chrono::milliseconds(500));
         const QString sessionId = acceptSingleFile(64 * 1024, QStringLiteral("died.bin"));
+        QSignalSpy progress(m_service, &ReceiveService::fileProgress);
 
         {
             RawClient client(rawclient::withCertificate(m_sender), this);
@@ -758,7 +762,9 @@ private slots:
             client.send("PUT " + uploadTarget(sessionId, kFileId)
                         + " HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n");
             client.send(QByteArray(4096, 'x'));
-            QTest::qWait(200);
+            // 等到真的在收字节再断：不然可能断在 PUT 到达之前，测的就不是这条路了
+            // （那条连接根本没建起来，也就没有悬垂的指针）。
+            QVERIFY(waitFor([&] { return progress.count() > 0; }));
             client.abort(); // 硬断
         }
 
@@ -769,6 +775,7 @@ private slots:
     void cancelAfterTheUploadConnectionDiedIsSafe()
     {
         const QString sessionId = acceptSingleFile(64 * 1024, QStringLiteral("died.bin"));
+        QSignalSpy progress(m_service, &ReceiveService::fileProgress);
 
         {
             RawClient client(rawclient::withCertificate(m_sender), this);
@@ -776,7 +783,7 @@ private slots:
             client.send("PUT " + uploadTarget(sessionId, kFileId)
                         + " HTTP/1.1\r\nHost: x\r\nContent-Length: 65536\r\n\r\n");
             client.send(QByteArray(4096, 'x'));
-            QTest::qWait(200);
+            QVERIFY(waitFor([&] { return progress.count() > 0; }));
             client.abort();
         }
 
@@ -786,9 +793,13 @@ private slots:
         QVERIFY(!QDir(tempDirFor(sessionId)).exists());
     }
 
+    // TTL 到点就把临时数据删掉。
+    //
+    // 窗口留得比「够快就行」宽：从会话建好到这条断言之间还要走一次事件循环，慢的 CI
+    // 机器上几十毫秒就过去了——TTL 设成 50ms 时，那台机器上会在断言之前先把目录删掉。
     void sessionTtlExpiryDeletesTempData()
     {
-        m_service->setSessionTtl(std::chrono::milliseconds(50));
+        m_service->setSessionTtl(std::chrono::milliseconds(400));
         const QString sessionId = acceptSingleFile(3);
         QVERIFY(QDir(tempDirFor(sessionId)).exists());
 
@@ -798,19 +809,26 @@ private slots:
 
     // PUT 在途时 TTL 挂起：否则一个几分钟的大文件会被从中间打断，
     // 而它删的正是正在写的那个临时文件。
+    //
+    // 先等到真的收到字节（证明 PUT 已经在途、TTL 已被挂起），再睡过 TTL——直接睡一个
+    // 固定的短时间，在慢机器上会把「PUT 还没到」误判成「TTL 没挂起」。
     void uploadInFlightSuspendsTheSessionTtl()
     {
-        m_service->setSessionTtl(std::chrono::milliseconds(80));
+        m_service->setSessionTtl(std::chrono::milliseconds(500));
         const QString sessionId = acceptSingleFile(4, QStringLiteral("slow.bin"));
+        QSignalSpy progress(m_service, &ReceiveService::fileProgress);
 
         RawClient client(rawclient::withCertificate(m_sender), this);
         client.connectTo(m_port);
         client.send("PUT " + uploadTarget(sessionId, kFileId)
                     + " HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\n");
         client.send(QByteArray("ab"));
-        QTest::qWait(250); // 远超 TTL，但传输还在进行
+
+        QVERIFY(waitFor([&] { return progress.count() > 0; })); // 在途了
+        QTest::qWait(1200);                                     // 远超 TTL，但传输还在进行
+
         client.send(QByteArray("cd"));
-        QTRY_VERIFY(client.finished());
+        QVERIFY(waitFor([&] { return client.finished(); }));
         QCOMPARE(client.statusCode(), 200);
         QVERIFY(QFile::exists(QDir(receiveDir()).filePath(QStringLiteral("slow.bin"))));
     }
