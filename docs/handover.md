@@ -13,7 +13,7 @@
 | M1 身份 + TLS + 接收服务端 | 完成 | 身份、解析器、mTLS、`/ping`、解析器负向用例。**用 curl 独立验证过**（另一套 TLS/HTTP 栈） |
 | M2 发现 | 基本完成 | 接口、对端目录、多地址回退、UDP 广播、Linux Avahi、Windows Win32 DNS-SD 都已落地。**缺**：macOS 的 Network.framework 后端、mjansson 兜底、以及两台真机的验收 |
 | M3 传输引擎 | 完成 | `prepare` / `upload` / `complete` / `abort`、会话与 TTL、临时目录、文件名净化、双向取消、空闲超时。**1 GB 端到端逐字节验过**（见下） |
-| M4 配对与策略 | 部分 | SAS（12 位拆半、两端各自输入）与信任库已完成。**缺**：黑名单、提示限流、自动接受的策略接线、以及把审批框做出来 |
+| M4 配对与策略 | 完成（CLI 面） | SAS、信任库、自动接受、黑名单、提示限流都已落地。CLI 上有 `devices` / `block` / `unblock`，审批提示接受 `y`/`n`/`b`。**审批框本身是 M5**——CLI 现在是同步读一行 |
 | M5 图形界面 | 未开始 | |
 | M6 桌面 1.0 | 未开始 | |
 
@@ -31,6 +31,8 @@ M1 与 M4 的边界是刻意挪过的：原计划把 SAS 放在 M4，实际随 M
 | macOS 上除广播以外的发现 | 后端还没写 | 写 Network.framework 后端 |
 | 10 GB 传输的内存持平 | M3 只跑了 1 GB。本机 `/` 只剩 9 GB 可用（`/tmp` 与 `$HOME` 同一文件系统），10 GB 那项峰值要三份 10 GB，物理上跑不了 | 在一台有 30 GB 空闲磁盘的机器上跑 `lanpipe send`，同时按秒采 `/proc/<pid>/status` 的 `VmRSS`：1 GB 那次是 25.0 → 25.8 MB 持平，10 GB 应当同样平 |
 | 接收方在传输中途崩溃后的残留 | 没构造过「接收方进程 crash」这一路 | 杀接收方进程后看 `<接收目录>/.lanpipe-tmp`：分片是 QSaveFile 的临时文件，崩溃时会留下，由 24 小时清扫收走（§5.7）。要验清扫就改系统时间或直接调 `sweepStaleTempData(now)` |
+| 黑名单与限流在两台真机上 | 只在单机（两个 `$HOME`）验过 | 一台屏蔽另一台，确认对方拿到 403 且**不弹框**；连续发起 4 次 prepare，第 4 次应当被限流拒掉 |
+| 两个进程同时写信任库 | 没有并发保护，后写的覆盖先写的 | 真要验就同时跑 `lanpipe block` 与一次配对，然后看 `trust.json` 里丢了哪一边。个人使用下这是可接受的 |
 
 另外几处**已知与设计不符**的地方，动手前先读：
 
@@ -148,9 +150,17 @@ ctest --test-dir build/local --output-on-failure
 
 ## 五、下一步
 
-M3 已落地，接下来是 **M4 收尾**：黑名单（含持久化与 UI 上的 Block 动作）、提示限流、
-以及把审批框接到 M5。传输这条链上的策略判定已经在 `trust/policy.{h,cpp}` 里，
-接 M4 的规则就是往那个纯函数里加分支 + 一个持续化的名单。
+M3 与 M4 都已落地，接下来是 **M5：QML 前端**（Send / Receive / Devices / Pairing /
+Settings），核心一行不用改——界面要的信号都在：`ReceiveService::approvalRequired` /
+`submitApproval` / `submitBlock`、`fileProgress`、`fileCommitted`、`sessionFinished`、
+`peerBlocked`，`PingService::inputRequired` / `submitInput`，以及 `PeerDirectory`。
+
+两处 M5 必须处理的东西，先记下来：
+
+1. **CLI 的同步输入换成异步之后，两个计时器才真正生效**：`kSasInputWindow` 与
+   `kApprovalWindow` 现在因为事件循环被阻塞而形同虚设（见「已知与设计不符」第 2 条）。
+2. **审美疲劳那条防线要靠 UI 兜住**：限流只挡得住同一条设备的密集请求，真正的
+   「未知设备」仍会一次次弹框——界面上要让「拒绝并屏蔽」比「接受」更难误点。
 
 **发送方的 `--yes` / `--pin` 不写信任库**（`cli/main.cpp` 的 `pair` 收尾）——这是 M1 就
 留下的行为：那两条是给 CI 用的非交互路径。因此 `send` 的两条合法凭据是「信任库里有记录」
