@@ -508,8 +508,12 @@ POST /api/v1/abort/{sessionId}
 
 ### Rules
 
-1. The sender reads in 256 KB chunks; a 10 GB file allocates no more than one chunk. The sender
-   uses `QNetworkAccessManager::put(request, QIODevice *)`.
+1. The sender streams from a `QIODevice` via `QNetworkAccessManager::put(request, QIODevice *)`.
+   `kChunkSize` is **not** the on-the-wire block size: Qt reads the device in its own bounded
+   blocks (16–32 KB scale) and hands them to the socket, so what matters is that the device is
+   never read whole. Nothing in the path buffers a file: the sender hands Qt a `QFile`, the
+   receiver writes each arriving chunk straight into a `QSaveFile`. A sender that "implements
+   256 KB chunking" on top of this would add a buffer, not remove one.
 
 2. **Each file is renamed into place when its own `PUT` returns 200**, not at `complete`.
    Renaming only at `complete` makes the entire session a single point of failure: a crash after
@@ -690,7 +694,7 @@ desktop 1.0 is in daily use, and only if §1.2 held. Sizes: S ≤ 2 days, M ≤ 
 | M0 | Skeleton: core layout, CMake (C++23), OpenSSL bundling, QtTest, headless CLI harness (`serve` / `send` / `pair`, with `--yes` and `--pin` for non-interactive CI), CI (Linux + Windows, plus a compile-and-`ctest` macOS job as a portability canary) | **DONE** | S | Core builds and `ctest` passes on all three; CLI runs headless |
 | M1 | Identity + TLS + receive server: cert generation via OpenSSL, SPKI fingerprint, keystore, `QTcpServer` + `QSslServer` + our HTTP parser (§5.15 subset), mutual TLS, `/ping` with nonces | **DONE** | M | `curl --cert --key` reaches `/ping`; a client without a certificate is rejected; fingerprint prints to console. Parser negative tests: `Transfer-Encoding: chunked` → 400 + close with the body never decoded; duplicate `Content-Length` → 400; malformed or overflowing `Content-Length` → 400; header block beyond the caps → 400; a body exceeding the declared size is cut off mid-stream; a client that stalls after the headers is closed by the idle timeout |
 | M2 | Discovery: `Discovery` interface, system DNS-SD backend, UDP broadcast fallback, `PeerDirectory` with address sets | **PARTIAL** | M | Two headless instances on **two real machines** discover each other; `dns-sd` / `avahi-browse` sees the service; with mDNS disabled, broadcast still finds peers; a wrong-first-address case falls back within the connect timeout. **The Windows DNS-SD path cannot be accepted in CI**: GitHub runners resolve nothing over mDNS, so `tst_windnssd` skips there (`SKIP_RETURN_CODE`, visible as `***Skipped`) and the round trip is accepted on a real Windows desktop. The Linux/Avahi path *is* exercised in CI. |
-| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | not started | M | The sender identity is taken from the client certificate alone — `prepare` carries no id to compare against (§4 Transport); 1 GB desktop→desktop transfers correctly; cancel from either side leaves no temp data; 10 GB stays flat in memory; disk-full returns 507; a retried `PUT` does not corrupt; a killed peer times out instead of hanging |
+| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | **DONE** | M | Verified: 1 GB desktop→desktop byte-identical, sender RSS flat at 25.0→25.8 MB; cancel from either side leaves no temp data (the receiver's Ctrl-C exits 130 and removes the session dir; a killed sender leaves zero temp files and the receiver keeps serving); the sender identity is taken from the client certificate alone — `prepare` carries no id to compare against (§4 Transport); a retried `PUT` truncates instead of appending; an oversized/mismatched `Content-Length` is refused with 409 before a byte is read. **Not verified: the 10 GB flat-memory run** — see `docs/handover.md`. Disk-full (507) is unit-tested through the injectable free-space probe, not against a full disk |
 | M4 | Pairing + policy: nonce SAS, trust store, auto-accept rules, block list, rate limiting, collision naming, filename sanitizer | **PARTIAL** | M | Via CLI harness: unknown sender → both sides show matching codes → paired → silent accept; a peer whose fingerprint changed is rejected; every hostile-filename vector is rejected; two concurrent `prepare`s → 409 |
 | M5 | QML frontend — Send / Receive / Devices / Pairing / Settings on the existing core models; no core changes | not started | M | Full desktop flow via UI: discover, pair, transfer with progress; core untouched |
 | M6 | Desktop 1.0: settings, history, error paths, installers, firewall hint, diagnostics export. No notarization, no store signing — local use only | not started | S–M | Windows and Linux installable and transferring in daily use |
@@ -709,7 +713,7 @@ Every risk maps to at least one acceptance criterion above; a risk with no test 
 |---|---|---|---|
 | HTTP parser defects (our code now) | Corruption, smuggling, crash | Closed subset (§5.15): `Content-Length` framing only, one request per connection, no chunked/compression/header-echo; negative tests in M1 | M1, M3 |
 | Sender identity unchecked | Paired-peer impersonation; the whole receive policy collapses | Mutual TLS + identity resolved from the certificate only, no claimed id on the wire + fail-closed | M1, M4 |
-| Large-file memory blowup | OOM on phones | Fixed-size chunks; no buffering anywhere in the path | M3 (10 GB flat) |
+| Large-file memory blowup | OOM on phones | No buffering anywhere in the path: the sender streams from a `QIODevice` that Qt reads in bounded blocks, the receiver writes each chunk straight to disk | M3, but **only at 1 GB** (RSS flat at ~25 MB). The 10 GB run is deferred — `docs/handover.md` records why and how to run it |
 | Half-open connections | Transfers hang forever with no error | Keepalive, idle timeout, per-address connect timeout | M3 |
 | Wrong address chosen for a multi-homed peer | 30–75 s stalls, apparent failures | Address sets + short per-address timeout + ordered fallback | M2, M3 |
 | Disk full on the receiver | User approves a transfer that cannot complete | Free-space check at `prepare`, 507 | M3 |

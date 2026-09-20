@@ -93,9 +93,12 @@ else no user response within 30 s
 end
 note over S, R
   prepare also checks free space → 507 if short.
-  The approved file sizes and totalSize are hard caps for the whole session (§5.3).
-  Sender HTTP timeout is 3 min — above the receiver's 2 min pairing input window
-  and its 30 s decision window.
+  The approved file sizes and totalSize are hard caps for the whole session (§5.3):
+  totalSize must equal the sum of the file sizes, and every PUT's Content-Length must
+  equal that file's approved size.
+  Sender HTTP timeout: 45 s for prepare/complete/abort (§5.9 — above the receiver's 30 s
+  decision window), 30 s of *inactivity* for a PUT. The receiver checks identity change,
+  name sanitisation, the active session and free space BEFORE asking its user.
 end note
 
 == Connections 3..n — upload (one PUT per TLS connection, sequential) ==

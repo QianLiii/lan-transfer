@@ -12,7 +12,7 @@
 
 ## 现在能做什么
 
-已经跑通的是**「发现 → 配对 → 双方写入信任库」**这一段，端到端实测过：
+**「发现 → 配对 → 双方写入信任库 → 传文件」这一段是通的了**，端到端实测过：
 
 | 能力 | 状态 |
 |---|---|
@@ -22,11 +22,13 @@
 | 信任库（持久化、原子写入、指纹变更即拒） | 完成 |
 | 发现：UDP 广播、Linux Avahi、Windows Win32 DNS-SD | 完成（Windows 那条的真机往返尚未验证，见下） |
 | 多地址回退（一个 `deviceId` 一组地址，逐个短超时尝试） | 完成 |
-| **传文件**（prepare / upload / complete / abort） | **未开始（M3）** |
+| 传文件（prepare / upload / complete / abort） | 完成。1 GB 本机端到端逐字节验过；**10 GB 的内存验收没跑**（见下） |
+| 接收方的审批、拒绝、双向取消、会话超时、文件名净化 | 完成 |
+| 发送方只发给已配对的设备（信任库或 `--pin` 指定指纹） | 完成 |
 | 图形界面 | 未开始（M5） |
 
-`lanpipe send` 目前以退出码 10 返回「尚未实现」。**现在两端的交互止于「配对码一致」**，
-还不能真的传文件。
+单文件与多文件都可以；一次一个会话、文件顺序上传、每个文件在自己的 PUT 返回 200 时就位
+（不等到 `complete`）。没有断点续传：中途断了重传从零开始。
 
 ## 构建
 
@@ -82,19 +84,29 @@ lanpipe pair 192.168.31.123:4490   # 或直接给地址
 ```
 
 两端各显示 6 位数字，把**对方屏幕上的那串**输进自己这一端，两端各自比对。一致即各自写入
-信任库。
+信任库。之后发送方就能发文件了：
+
+```bash
+lanpipe send bc28f694 /path/to/file      # deviceId 前缀，走发现
+lanpipe send 192.168.31.123:4490 <文件>  # 或直接给地址（对方也必须是已配对设备）
+```
+
+接收方会列出**是谁、几个文件、多大**并要求确认；传输期间每 10% 打一行进度。
+接收方按 Ctrl-C 可以取消当前传输。
 
 非交互路径（CI 与自动化用，见 `--help`）：`--pin <64 位十六进制指纹>` 指定对端指纹、
 `--yes` 自动接受一切审批。
 
 ## 测试与 CI
 
-13 个 QtTest 套件，`ctest --preset dev` 全跑：
+19 个 QtTest 套件，`ctest --preset dev` 全跑：
 
 ```
 tst_protocol  tst_settings  tst_identity  tst_httprequest  tst_sas
 tst_httptransport  tst_ping  tst_peerdirectory  tst_peerconnector
 tst_truststore  tst_broadcast  tst_avahi  tst_windnssd
+tst_sanitizer  tst_localfiles  tst_policy  tst_transfer
+tst_receiveservice  tst_sendclient
 ```
 
 CI（`.github/workflows/ci.yml`）在 Linux / Windows / macOS 三格各跑「构建 + ctest」。
@@ -107,14 +119,20 @@ CI（`.github/workflows/ci.yml`）在 Linux / Windows / macOS 三格各跑「构
 
 ## 代码索引（按这个顺序读）
 
-1. `TECHNICAL_ROUTE.md` §0–§1（是什么、分层约束）、§4（身份与配对）、§5.15（HTTP 子集）。
-2. `core/protocol.h` —— 全部协议常量。文件头两条约束改动即等于改协议。
+1. `TECHNICAL_ROUTE.md` §0–§1（是什么、分层约束）、§4（身份与配对）、§5（传输协议全文）。
+2. `core/protocol.h` —— 全部协议常量。文件头三条约束改动即等于改协议。
 3. `core/identity.{h,cpp}` —— 密钥、自签证书、SPKI 指纹、到期重签。
 4. `core/mtls.{h,cpp}`、`core/http/httpserver.{h,cpp}` —— **身份判定只有连接层这一处**。
 5. `core/http/httprequest.{h,cpp}` —— 请求头解析器与其上限（负向用例在 `tests/`）。
 6. `core/sas.{h,cpp}`、`core/transfer/ping.{h,cpp}`、`pingclient.{h,cpp}` —— 配对往返。
-7. `core/trust/truststore.{h,cpp}` —— 配对关系的持久化。
-8. `core/discovery/` —— `discovery.h`（接口）→ `peerdirectory`（合并）→ `peerconnector`
-   （多地址回退）→ 三个后端（`broadcast` / `avahi` / `windnssd`）。
-9. `cli/main.cpp` —— 目前唯一的界面，也是全部接线处。
-10. `tests/` —— 验收标准的可执行形式；负向用例比正向用例多，那是解析器的规格。
+7. `core/transfer/` —— 传输：`transfer.{h,cpp}`（线格式与校验）→ `receivesession` /
+   `receiveservice`（接收方四端点与会话）→ `sendclient`（发送方状态机）→
+   `peerpinning.{h,cpp}`（**发送方判定「对端是谁」的唯一一处**，与配对共用）。
+8. `core/trust/` —— `truststore`（配对关系）、`sanitizer`（文件名净化与改名）、
+   `policy`（接收策略的纯函数）。
+9. `core/files/` —— `FileSource` / `FileSink` 接口与桌面实现（接收方写临时文件、
+   提交时改名进接收目录）。
+10. `core/discovery/` —— `discovery.h`（接口）→ `peerdirectory`（合并）→ `peerconnector`
+    （多地址回退）→ 三个后端（`broadcast` / `avahi` / `windnssd`）。
+11. `cli/main.cpp` —— 目前唯一的界面，也是全部接线处。
+12. `tests/` —— 验收标准的可执行形式；负向用例比正向用例多，那是解析器与端点的规格。
