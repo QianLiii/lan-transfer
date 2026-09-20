@@ -28,16 +28,25 @@ AvahiDiscovery::Config configFor(const Advertisement &self, bool announce)
     return config;
 }
 
-Advertisement advertisementOf(const QString &deviceId, const QString &name, quint16 port)
+Advertisement advertisementOf(const QString &fingerprint, const QString &name, quint16 port)
 {
     Advertisement advertisement;
-    advertisement.deviceId = deviceId;
     advertisement.name = name;
-    advertisement.fingerprint = QString(64, QLatin1Char('a'));
+    advertisement.fingerprint = fingerprint;
     advertisement.version = proto::kVersion;
     advertisement.port = port;
     return advertisement;
 }
+
+// 通告里只有指纹，deviceId 由它现算，所以每个实例要有一份各不相同的指纹——
+// 指纹相同的那份会被对方当成「自己的注册」滤掉。这些常量都是同一个字符重复
+// 64 次，于是算出的 deviceId 就是同样的字符重复 32 次。
+const QString kFingerprint1 = QString(64, QLatin1Char('1'));
+const QString kFingerprint2 = QString(64, QLatin1Char('2'));
+const QString kFingerprint3 = QString(64, QLatin1Char('3'));
+const QString kFingerprint4 = QString(64, QLatin1Char('4'));
+const QString kFingerprint5 = QString(64, QLatin1Char('5'));
+const QString kFingerprint6 = QString(64, QLatin1Char('6'));
 
 } // namespace
 
@@ -52,17 +61,16 @@ private slots:
             QSKIP("这台机器上没有 avahi-daemon，跳过");
     }
 
-    // 一个实例注册、另一个实例浏览：浏览方应当拿到同样的 deviceId、名字、指纹与端口。
+    // 一个实例注册、另一个实例浏览：浏览方应当拿到同样的指纹、名字与端口，
+    // 并从中算出同样的 deviceId。
     void browseFindsAnAnnouncedPeer()
     {
-        const QString announcerId = QStringLiteral("11111111111111111111111111111111");
+        const QString announcerId = deviceIdFromHex(kFingerprint1);
         AvahiDiscovery announcer(configFor(
-            advertisementOf(announcerId, QStringLiteral("广播方"), 4455), true));
+            advertisementOf(kFingerprint1, QStringLiteral("广播方"), 4455), true));
 
         AvahiDiscovery browser(configFor(
-            advertisementOf(QStringLiteral("22222222222222222222222222222222"),
-                            QStringLiteral("浏览方"), 0),
-            false));
+            advertisementOf(kFingerprint2, QStringLiteral("浏览方"), 0), false));
         QSignalSpy found(&browser, &AvahiDiscovery::announced);
 
         announcer.start();
@@ -76,11 +84,11 @@ private slots:
         bool matched = false;
         for (const QList<QVariant> &emission : found) {
             const auto announcement = emission.at(0).value<Announcement>();
-            if (announcement.advertisement.deviceId != announcerId)
+            if (announcement.advertisement.deviceId() != announcerId)
                 continue;
             matched = true;
             QCOMPARE(announcement.advertisement.name, QStringLiteral("广播方"));
-            QCOMPARE(announcement.advertisement.fingerprint, QString(64, QLatin1Char('a')));
+            QCOMPARE(announcement.advertisement.fingerprint, kFingerprint1);
             QCOMPARE(announcement.advertisement.version, proto::kVersion);
             QCOMPARE(announcement.advertisement.port, quint16{4455});
             // 地址来自解析结果，必须是可用的地址而不是空。
@@ -90,31 +98,29 @@ private slots:
         QVERIFY2(matched, "没有从浏览结果里拿到注册的那条服务");
     }
 
-    // 自己的注册守护进程也会报回来，必须按 deviceId 滤掉，否则目录里会出现自己。
+    // 自己的注册守护进程也会报回来，必须按指纹滤掉，否则目录里会出现自己。
     void instanceDoesNotFindItself()
     {
         AvahiDiscovery self(configFor(
-            advertisementOf(QStringLiteral("33333333333333333333333333333333"),
-                            QStringLiteral("自己"), 4456),
-            true));
+            advertisementOf(kFingerprint3, QStringLiteral("自己"), 4456), true));
         QSignalSpy found(&self, &AvahiDiscovery::announced);
         self.start();
         QVERIFY2(self.lastError().isEmpty(), qPrintable(self.lastError()));
 
         QTest::qWait(1500);
         for (const QList<QVariant> &emission : found) {
-            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId
-                    != QStringLiteral("33333333333333333333333333333333"));
+            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId()
+                    != deviceIdFromHex(kFingerprint3));
         }
     }
 
     // 关掉之后注册要撤销：另一个实例不应再收到它。
     void stoppingWithdrawsTheService()
     {
-        const QString id = QStringLiteral("44444444444444444444444444444444");
+        const QString id = deviceIdFromHex(kFingerprint4);
         {
             AvahiDiscovery announcer(
-                configFor(advertisementOf(id, QStringLiteral("临时"), 4457), true));
+                configFor(advertisementOf(kFingerprint4, QStringLiteral("临时"), 4457), true));
             announcer.start();
             QVERIFY2(announcer.lastError().isEmpty(), qPrintable(announcer.lastError()));
             QTest::qWait(500);
@@ -122,15 +128,13 @@ private slots:
         }
 
         AvahiDiscovery browser(configFor(
-            advertisementOf(QStringLiteral("55555555555555555555555555555555"),
-                            QStringLiteral("浏览方"), 0),
-            false));
+            advertisementOf(kFingerprint5, QStringLiteral("浏览方"), 0), false));
         QSignalSpy found(&browser, &AvahiDiscovery::announced);
         browser.start();
         QTest::qWait(1500);
 
         for (const QList<QVariant> &emission : found) {
-            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId != id);
+            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId() != id);
         }
     }
 
@@ -138,9 +142,7 @@ private slots:
     void browseOnlyNeedsNoPort()
     {
         AvahiDiscovery browser(configFor(
-            advertisementOf(QStringLiteral("66666666666666666666666666666666"),
-                            QStringLiteral("只要浏览"), 0),
-            false));
+            advertisementOf(kFingerprint6, QStringLiteral("只要浏览"), 0), false));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(), qPrintable(browser.lastError()));
     }

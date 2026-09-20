@@ -41,7 +41,7 @@ class BroadcastDiscovery : public Discovery
 public:
     struct Config
     {
-        // 本机对外通告的内容。deviceId 同时用于过滤自己发出的广播。
+        // 本机对外通告的内容。指纹同时用于过滤自己发出的广播。
         Advertisement self;
 
         // 是否对外通告。发送方只找人不被找——它没有在监听，通告出去也没有意义，

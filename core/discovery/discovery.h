@@ -9,6 +9,8 @@
 // 三个来源的地位不同（§3.6）：系统 DNS-SD 是主路径，UDP 广播是兜底，
 // 手动 IP:port 是最后一招。它们都产出同一个 Announcement。
 
+#include "identity.h" // deviceIdFromHex：deviceId 由指纹现算
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QHostAddress>
@@ -24,11 +26,14 @@ namespace lanpipe::discovery {
 // 广播载荷与 TXT 用的是同一组字段，所以只有这一个结构体。
 struct Advertisement
 {
-    QString deviceId;    // TXT id：指纹的前 16 字节，32 位十六进制（§3.2）
     QString name;        // TXT name：用户可见名。不比 mDNS 实例名，系统会改名（§3.8）
     QString fingerprint; // TXT fp：SPKI 指纹。**仅作连接提示，永不是信任锚**（§3.2、§4）
     int version = 0;     // TXT ver：协议版本
     quint16 port = 0;    // 实际监听端口。端口 0 表示由系统分配，通告里必须是确定的那个（§3.1）
+
+    // deviceId 不单独传输，由收到通告的这一端从指纹现算。指纹不合法时为空串，
+    // 那样的通告在 PeerDirectory 里被丢弃。
+    [[nodiscard]] QString deviceId() const { return deviceIdFromHex(fingerprint); }
 };
 
 // 一次观测。

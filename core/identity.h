@@ -40,9 +40,15 @@ private:
     QByteArray m_bytes;
 };
 
-// deviceId：指纹的截断形式，用于 TXT 与请求体（§3.2）。
-// 长度常量在 protocol.h，那里是它被引用的地方（TXT 的 id 字段、/ping 的响应）。
+// deviceId：指纹的截断形式（§3.2）。长度常量在 protocol.h。
+//
+// 它只由指纹现算，从不在线格式里出现。线上传一个 deviceId 等于传一个无法校验的
+// 声称值；现算出来的则必然与那把公钥绑定。
 [[nodiscard]] QString deviceIdFrom(const Fingerprint &fingerprint);
+
+// 十六进制指纹 → deviceId。不是 64 个字符的合法十六进制时返回空串，
+// 调用方据此丢弃这份通告。
+[[nodiscard]] QString deviceIdFromHex(const QString &hex);
 
 class Identity
 {

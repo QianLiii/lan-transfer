@@ -12,6 +12,10 @@
 //
 //   2. sessionId 与 fileId 都是十六进制字符串，路径中不含任何需要百分号解码的
 //      字符——解析器不做解码，也不接受任何其它形态（§5.15）。
+//
+//   3. 线格式里只有指纹，没有 deviceId。deviceId 由收到它的那一端从指纹的前
+//      kDeviceIdBytes 字节现算（deviceIdFromHex），因此它永远不是「对端声称的值」，
+//      也就没有「声称的 deviceId 与证书不符」这类检查要写。
 
 #include <chrono>
 #include <cstddef>
@@ -38,12 +42,11 @@ inline constexpr int kVersion = 1;
 // 服务类型。完整实例名是 _lanpipe._tcp.local。
 inline constexpr std::string_view kServiceType = "_lanpipe._tcp";
 
-// TXT 字段名。
-//   id   —— deviceId 的截断形式，完整值从 /ping 取（§3.2）
-//   fp   —— SPKI 指纹，仅作连接提示，永不是信任锚（§3.2、§4）
+// TXT 字段名，广播载荷用的是同一组（§3.2）。
+//   fp   —— SPKI 指纹（64 个十六进制字符）。deviceId 由收到它的那一端现算，
+//           它是身份提示里唯一的传输字段；仅作连接提示，永不是信任锚（§3.2、§4）
 //   name —— 设备名，任意 UTF-8，单条 TXT 串上限 255 字节须转义截断
 //   ver  —— 协议版本，整数
-inline constexpr std::string_view kTxtKeyId   = "id";
 inline constexpr std::string_view kTxtKeyFp   = "fp";
 inline constexpr std::string_view kTxtKeyName = "name";
 inline constexpr std::string_view kTxtKeyVer  = "ver";

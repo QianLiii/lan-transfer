@@ -19,9 +19,9 @@ namespace {
 Advertisement sampleAdvertisement()
 {
     Advertisement advertisement;
-    advertisement.deviceId = QStringLiteral("0123456789abcdef0123456789abcdef");
     advertisement.name = QStringLiteral("笔记本");
-    advertisement.fingerprint = QString(64, QLatin1Char('b'));
+    // 64 个十六进制字符；它派生出的 deviceId 就是前 32 个。
+    advertisement.fingerprint = QStringLiteral("0123456789abcdef").repeated(4);
     advertisement.version = proto::kVersion;
     advertisement.port = 4443;
     return advertisement;
@@ -77,11 +77,14 @@ private slots:
         const auto decoded = decodeAdvertisement(encodeAdvertisement(original));
 
         QVERIFY(decoded.has_value());
-        QCOMPARE(decoded->deviceId, original.deviceId);
         QCOMPARE(decoded->name, original.name);
         QCOMPARE(decoded->fingerprint, original.fingerprint);
         QCOMPARE(decoded->version, original.version);
         QCOMPARE(decoded->port, original.port);
+        // deviceId 不参与往返，两端各自从同一个指纹算出同一个值。
+        QCOMPARE(decoded->deviceId(), original.deviceId());
+        QCOMPARE(decoded->deviceId(),
+                 QStringLiteral("0123456789abcdef0123456789abcdef"));
     }
 
     void codecRejectsMalformedPayloads()
@@ -91,19 +94,23 @@ private slots:
             QByteArray("not json"),
             QByteArray("[1,2,3]"),
             // 缺字段
-            QByteArray(R"({"id":"0123456789abcdef0123456789abcdef"})"),
-            // id 长度不对
-            QByteArray(R"({"id":"abc","name":"x","fp":"..","ver":1,"port":4443})"),
+            QByteArray(R"({"fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})"),
+            // 指纹长度不对
+            QByteArray(R"({"name":"x","fp":"..","ver":1,"port":4443})"),
+            // 指纹含非十六进制字符
+            QByteArray(R"({"name":"x",)"
+                       R"("fp":"zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
+                       R"("ver":1,"port":4443})"),
             // 版本不是整数
-            QByteArray(R"({"id":"0123456789abcdef0123456789abcdef","name":"x",)"
+            QByteArray(R"({"name":"x",)"
                        R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
                        R"("ver":"1","port":4443})"),
             // 端口 0 在通告里没有意义
-            QByteArray(R"({"id":"0123456789abcdef0123456789abcdef","name":"x",)"
+            QByteArray(R"({"name":"x",)"
                        R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
                        R"("ver":1,"port":0})"),
             // 端口越界
-            QByteArray(R"({"id":"0123456789abcdef0123456789abcdef","name":"x",)"
+            QByteArray(R"({"name":"x",)"
                        R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
                        R"("ver":1,"port":70000})"),
         };
@@ -144,7 +151,7 @@ private slots:
         QVERIFY(discovery.boundPort() != 0);
 
         Advertisement peer = sampleAdvertisement();
-        peer.deviceId = QStringLiteral("ffffffffffffffffffffffffffffffff");
+        peer.fingerprint = QStringLiteral("f").repeated(64);
         peer.name = QStringLiteral("台式机");
 
         QUdpSocket sender;
@@ -155,7 +162,7 @@ private slots:
 
         QVERIFY(spy.wait(1000));
         const auto announcement = spy.first().at(0).value<Announcement>();
-        QCOMPARE(announcement.advertisement.deviceId, peer.deviceId);
+        QCOMPARE(announcement.advertisement.deviceId(), peer.deviceId());
         QCOMPARE(announcement.advertisement.name, QStringLiteral("台式机"));
         QCOMPARE(announcement.address, QHostAddress::LocalHost);
     }
@@ -181,7 +188,7 @@ private slots:
 
         const auto decoded = decodeAdvertisement(receiver.last());
         QVERIFY(decoded.has_value());
-        QCOMPARE(decoded->deviceId, sampleAdvertisement().deviceId);
+        QCOMPARE(decoded->fingerprint, sampleAdvertisement().fingerprint);
     }
 
     // 只浏览不通告：发送方没有在监听，通告出去只会让别人连到一个不存在的端口。
@@ -234,7 +241,7 @@ private slots:
         QVERIFY(!announcing.lastError().isEmpty());
     }
 
-    // 自己发的广播会回环到本机，必须按 deviceId 滤掉，否则目录里会出现自己。
+    // 自己发的广播会回环到本机，必须按指纹滤掉，否则目录里会出现自己。
     void ignoresOwnAnnouncements()
     {
         BroadcastDiscovery discovery({.self = sampleAdvertisement(),
@@ -268,7 +275,7 @@ private slots:
         QUdpSocket sender;
         QVERIFY(sender.bind(QHostAddress::LocalHost, 0));
         for (const QByteArray &garbage : {QByteArray("not json"),
-                                          QByteArray(R"({"id":"short"})"), QByteArray(2000, 'x')}) {
+                                          QByteArray(R"({"name":"short"})"), QByteArray(2000, 'x')}) {
             sender.writeDatagram(garbage, QHostAddress::LocalHost, discovery.boundPort());
         }
         QTest::qWait(200);
@@ -276,7 +283,7 @@ private slots:
 
         // 正常报文仍然收得到——坏报文没有把 socket 弄坏。
         Advertisement peer = sampleAdvertisement();
-        peer.deviceId = QStringLiteral("ffffffffffffffffffffffffffffffff");
+        peer.fingerprint = QStringLiteral("f").repeated(64);
         sender.writeDatagram(encodeAdvertisement(peer), QHostAddress::LocalHost,
                              discovery.boundPort());
         QVERIFY(spy.wait(1000));

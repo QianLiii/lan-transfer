@@ -69,7 +69,7 @@ AvahiDiscovery::AvahiDiscovery(Config config, QObject *parent)
         // §3.8：用户可见的名字是 TXT 的 name；mDNS 实例名只是网上唯一的标识，
         // 系统还会在冲突时自动改名，所以拿 deviceId 前缀保证唯一即可。
         m_config.instanceName =
-            QStringLiteral("lanpipe-%1").arg(m_config.self.deviceId.left(8));
+            QStringLiteral("lanpipe-%1").arg(m_config.self.deviceId().left(8));
     }
 
     m_refreshTimer = new QTimer(this);
@@ -140,8 +140,7 @@ void AvahiDiscovery::registerService()
     m_entryGroupPath = groupReply.arguments().constFirst().value<QDBusObjectPath>().path();
 
     QList<QByteArray> txt;
-    txt << txtEntry(proto::kTxtKeyId, m_config.self.deviceId.toLatin1())
-        << txtEntry(proto::kTxtKeyFp, m_config.self.fingerprint.toLatin1())
+    txt << txtEntry(proto::kTxtKeyFp, m_config.self.fingerprint.toLatin1())
         << txtEntry(proto::kTxtKeyName, txtTruncated(m_config.self.name))
         << txtEntry(proto::kTxtKeyVer, QByteArray::number(m_config.self.version));
 
@@ -261,7 +260,6 @@ void AvahiDiscovery::onItemNew(int interface, int protocol, const QString &name,
 
     const QHash<QString, QByteArray> fields = parseTxt(txt);
     Advertisement advertisement;
-    advertisement.deviceId = QString::fromLatin1(fields.value(QString::fromLatin1(proto::kTxtKeyId)));
     advertisement.fingerprint =
         QString::fromLatin1(fields.value(QString::fromLatin1(proto::kTxtKeyFp)));
     advertisement.name = QString::fromUtf8(fields.value(QString::fromLatin1(proto::kTxtKeyName)));
@@ -269,13 +267,12 @@ void AvahiDiscovery::onItemNew(int interface, int protocol, const QString &name,
         fields.value(QString::fromLatin1(proto::kTxtKeyVer)).toInt();
     advertisement.port = port;
 
-    if (advertisement.deviceId.size() != proto::kDeviceIdBytes * 2
-        || advertisement.fingerprint.size() != 64 || port == 0) {
+    // deviceId 由指纹现算，指纹不是 64 个十六进制字符就算字段不合法。
+    if (advertisement.deviceId().isEmpty() || port == 0)
         return; // 不是我们的服务，或者字段不合法
-    }
 
     // 自己的注册守护进程也会报回来。
-    if (advertisement.deviceId == m_config.self.deviceId)
+    if (advertisement.fingerprint.compare(m_config.self.fingerprint, Qt::CaseInsensitive) == 0)
         return;
 
     Announcement announcement;

@@ -130,7 +130,8 @@ private slots:
 
         // 发送方回应的那半 = 接收方显示的那半。
         QVERIFY(result.code.matches(receiverCode.shown));
-        QCOMPARE(result.info.deviceId, m_identity.deviceId());
+        // deviceId 不在响应里，由握手指纹现算——算出来就是接收方的身份。
+        QCOMPARE(deviceIdFrom(result.peerFingerprint), m_identity.deviceId());
         QCOMPARE(result.info.name, QStringLiteral("接收方"));
         QCOMPARE(result.info.version, proto::kVersion);
         QCOMPARE(result.info.fingerprint.toHex(), m_identity.fingerprint().toHex());
@@ -264,7 +265,6 @@ private slots:
         HttpServer liar;
         liar.setHandler([](HttpConnection &connection) {
             PingInfo info;
-            info.deviceId = QString(32, QLatin1Char('b'));
             info.name = QStringLiteral("冒名者");
             info.version = proto::kVersion;
             info.fingerprint = *Fingerprint::fromHex(QString(64, QLatin1Char('c')));
@@ -339,7 +339,6 @@ private slots:
         QVERIFY(!pingRequestFromJson(QByteArray("[]")).has_value());
 
         PingInfo info;
-        info.deviceId = QString(32, QLatin1Char('d'));
         info.name = QStringLiteral("接收方");
         info.version = proto::kVersion;
         info.fingerprint = m_identity.fingerprint();
@@ -347,11 +346,12 @@ private slots:
         const auto roundTripped = pingInfoFromJson(QJsonDocument(toJson(info))
                                                        .toJson(QJsonDocument::Compact));
         QVERIFY(roundTripped.has_value());
-        QCOMPARE(roundTripped->deviceId, info.deviceId);
         QCOMPARE(roundTripped->reachable, false);
         QCOMPARE(roundTripped->fingerprint.toHex(), info.fingerprint.toHex());
 
-        // 缺字段一律拒绝。
+        // 缺字段一律拒绝。deviceId 不是响应里的字段，写进去也不会被认。
+        QVERIFY(!pingInfoFromJson(QByteArray(R"({"name":"x","ver":1,"reachable":true})"))
+                     .has_value());
         QVERIFY(!pingInfoFromJson(QByteArray(R"({"deviceId":"x"})")).has_value());
     }
 };

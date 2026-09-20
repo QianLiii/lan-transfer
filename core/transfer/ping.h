@@ -3,8 +3,8 @@
 // /ping —— 配对握手（§4、§5）。
 //
 //   发送方  POST /api/v1/ping   { cnonce, name }
-//   接收方  200 { deviceId, name, ver, fp, reachable }   —— 本端比对也通过
-//           403                                       —— 本端比对未通过（或超时 504）
+//   接收方  200 { name, ver, fp, reachable }             —— 本端比对也通过
+//           403                                          —— 本端比对未通过（或超时 504）
 //
 // 请求用 POST 而不是 GET：接收方的用户在被要求输入配对码之前，必须先在屏幕上看到
 // 「这是谁」。查询串与请求头都承载不了 UTF-8 的设备名（§5.15 只接受可见 ASCII），
@@ -26,6 +26,9 @@
 //
 // 响应里的 fp 只是让发送方核对一下握手所见，**不是**信任锚：两端算 SAS 都用握手时
 // 亲眼看到的证书（§4），谁也不读这个字段。
+//
+// 响应里没有 deviceId：它是指纹的截断形式，由收到指纹的那一端现算。传输它等于
+// 多给对端一个可以随便填的字段，而我方还得再校验它——不传就没有这道检查。
 
 #include "http/httpconnection.h"
 #include "identity.h"
@@ -57,7 +60,6 @@ struct PingRequest
 
 struct PingInfo
 {
-    QString deviceId;
     QString name;
     int version = 0;
     Fingerprint fingerprint;

@@ -43,16 +43,19 @@ void PeerDirectory::setExpiry(std::chrono::milliseconds expiry)
 void PeerDirectory::apply(const Announcement &announcement)
 {
     const Advertisement &advertisement = announcement.advertisement;
-    if (advertisement.deviceId.isEmpty() || announcement.address.isNull())
+    // deviceId 由通告里的指纹现算：指纹不合法（长度不对、含非十六进制字符）时
+    // 为空串，这份通告就此丢弃。
+    const QString deviceId = advertisement.deviceId();
+    if (deviceId.isEmpty() || announcement.address.isNull())
         return;
 
-    auto it = m_peers.find(advertisement.deviceId);
+    auto it = m_peers.find(deviceId);
     const bool isNew = it == m_peers.end();
     if (isNew)
-        it = m_peers.insert(advertisement.deviceId, Peer{});
+        it = m_peers.insert(deviceId, Peer{});
 
     Peer &peer = it.value();
-    peer.deviceId = advertisement.deviceId;
+    peer.deviceId = deviceId;
     // 名字、指纹、版本都可能变（用户改名、证书重签后指纹不变、协议升级），
     // 因此每次通告都覆盖，而不是只在首次写入。
     peer.name = advertisement.name;

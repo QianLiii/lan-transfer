@@ -57,7 +57,6 @@ std::expected<QString, QString> hexField(const QJsonObject &object, const char *
 QByteArray encodeAdvertisement(const Advertisement &advertisement)
 {
     QJsonObject object;
-    object.insert(QStringLiteral("id"), advertisement.deviceId);
     object.insert(QStringLiteral("name"),
                   QString::fromUtf8(truncatedToBytes(advertisement.name, kMaxNameBytes)));
     object.insert(QStringLiteral("fp"), advertisement.fingerprint);
@@ -76,10 +75,6 @@ std::expected<Advertisement, QString> decodeAdvertisement(QByteArrayView datagra
             QStringLiteral("载荷不是 JSON 对象：%1").arg(parseError.errorString()));
 
     const QJsonObject object = document.object();
-
-    const auto deviceId = hexField(object, "id", proto::kDeviceIdBytes * 2);
-    if (!deviceId.has_value())
-        return std::unexpected(deviceId.error());
 
     const auto fingerprint = hexField(object, "fp", 32 * 2);
     if (!fingerprint.has_value())
@@ -103,7 +98,6 @@ std::expected<Advertisement, QString> decodeAdvertisement(QByteArrayView datagra
         return std::unexpected(QStringLiteral("字段 port 不在 1–65535 内"));
 
     Advertisement advertisement;
-    advertisement.deviceId = *deviceId;
     advertisement.name = name.toString();
     advertisement.fingerprint = *fingerprint;
     advertisement.version = version.toInt();
@@ -262,9 +256,12 @@ void BroadcastDiscovery::onReadyRead()
             continue;
         }
 
-        // 自己发的广播会回环到本机。
-        if (advertisement->deviceId == m_config.self.deviceId)
+        // 自己发的广播会回环到本机，按指纹滤掉。大小写不敏感：指纹的比较对象
+        // 是那把公钥，不是那串字符的写法。
+        if (advertisement->fingerprint.compare(m_config.self.fingerprint,
+                                               Qt::CaseInsensitive) == 0) {
             continue;
+        }
 
         Announcement announcement;
         announcement.advertisement = *advertisement;

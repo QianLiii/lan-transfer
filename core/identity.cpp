@@ -217,6 +217,18 @@ QString deviceIdFrom(const Fingerprint &fingerprint)
     return QString::fromLatin1(fingerprint.bytes().left(proto::kDeviceIdBytes).toHex());
 }
 
+QString deviceIdFromHex(const QString &hex)
+{
+    // 先卡长度：QByteArray::fromHex 会跳过非法字符，只靠它自己的长度检查
+    // 会放过「64 个合法字符掺了两个杂字符」这类输入。
+    if (hex.size() != 64)
+        return {};
+    const auto fingerprint = Fingerprint::fromHex(hex);
+    if (!fingerprint.has_value())
+        return {};
+    return deviceIdFrom(*fingerprint);
+}
+
 QString Identity::defaultDir()
 {
     return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))

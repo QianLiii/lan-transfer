@@ -71,7 +71,6 @@ std::expected<PingRequest, QString> pingRequestFromJson(const QByteArray &body)
 QJsonObject toJson(const PingInfo &info)
 {
     QJsonObject object;
-    object.insert(QStringLiteral("deviceId"), info.deviceId);
     object.insert(QStringLiteral("name"), info.name);
     object.insert(QStringLiteral("ver"), info.version);
     object.insert(QStringLiteral("fp"), info.fingerprint.toHex());
@@ -88,10 +87,6 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
             QStringLiteral("响应体不是 JSON 对象：%1").arg(parseError.errorString()));
 
     const QJsonObject object = document.object();
-
-    const auto deviceId = hexField(object, "deviceId", proto::kDeviceIdBytes * 2);
-    if (!deviceId.has_value())
-        return std::unexpected(deviceId.error());
 
     const auto fingerprintHex = hexField(object, "fp", 32 * 2);
     if (!fingerprintHex.has_value())
@@ -114,7 +109,6 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
         return std::unexpected(QStringLiteral("字段 reachable 缺失或不是布尔值"));
 
     PingInfo info;
-    info.deviceId = *deviceId;
     info.name = name.toString();
     info.version = version.toInt();
     info.fingerprint = *fingerprint;
@@ -211,7 +205,6 @@ void PingService::onRequestComplete(http::HttpConnection &connection, const QByt
         computeSas(peer.fingerprint, m_identity.fingerprint(), request->cnonce));
 
     PingInfo info;
-    info.deviceId = m_identity.deviceId();
     info.name = m_settings.deviceName();
     info.version = proto::kVersion;
     info.fingerprint = m_identity.fingerprint();

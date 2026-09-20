@@ -52,16 +52,23 @@ WinDnsSdDiscovery::Config configFor(const Advertisement &self, bool announce)
     return config;
 }
 
-Advertisement advertisementOf(const QString &deviceId, const QString &name, quint16 port)
+Advertisement advertisementOf(const QString &fingerprint, const QString &name, quint16 port)
 {
     Advertisement advertisement;
-    advertisement.deviceId = deviceId;
     advertisement.name = name;
-    advertisement.fingerprint = QString(64, QLatin1Char('a'));
+    advertisement.fingerprint = fingerprint;
     advertisement.version = proto::kVersion;
     advertisement.port = port;
     return advertisement;
 }
+
+// 通告里只有指纹，deviceId 由它现算，所以每个实例要有一份各不相同的指纹——
+// 指纹相同的那份会被对方当成「自己的注册」滤掉。这些常量都是同一个字符重复
+// 64 次，于是算出的 deviceId 就是同样的字符重复 32 次。
+const QString kFingerprint1 = QString(64, QLatin1Char('1'));
+const QString kFingerprint2 = QString(64, QLatin1Char('2'));
+const QString kFingerprint3 = QString(64, QLatin1Char('3'));
+const QString kFingerprint6 = QString(64, QLatin1Char('6'));
 
 } // namespace
 
@@ -70,16 +77,15 @@ class TestWinDnsSd : public QObject
     Q_OBJECT
 
 private slots:
-    // 一台实例注册、另一台浏览：浏览方应当拿到同样的 deviceId、名字、指纹与端口。
+    // 一台实例注册、另一台浏览：浏览方应当拿到同样的指纹、名字与端口，
+    // 并从中算出同样的 deviceId。
     void browseFindsAnAnnouncedPeer()
     {
-        const QString announcerId = QStringLiteral("11111111111111111111111111111111");
+        const QString announcerId = deviceIdFromHex(kFingerprint1);
         WinDnsSdDiscovery announcer(
-            configFor(advertisementOf(announcerId, QStringLiteral("广播方"), 4455), true));
+            configFor(advertisementOf(kFingerprint1, QStringLiteral("广播方"), 4455), true));
         WinDnsSdDiscovery browser(
-            configFor(advertisementOf(QStringLiteral("22222222222222222222222222222222"),
-                                      QStringLiteral("浏览方"), 0),
-                      false));
+            configFor(advertisementOf(kFingerprint2, QStringLiteral("浏览方"), 0), false));
         QSignalSpy found(&browser, &WinDnsSdDiscovery::announced);
 
         mark(QStringLiteral("announcer: starting"));
@@ -115,11 +121,11 @@ private slots:
         bool matched = false;
         for (const QList<QVariant> &emission : found) {
             const auto announcement = emission.at(0).value<Announcement>();
-            if (announcement.advertisement.deviceId != announcerId)
+            if (announcement.advertisement.deviceId() != announcerId)
                 continue;
             matched = true;
             QCOMPARE(announcement.advertisement.name, QStringLiteral("广播方"));
-            QCOMPARE(announcement.advertisement.fingerprint, QString(64, QLatin1Char('a')));
+            QCOMPARE(announcement.advertisement.fingerprint, kFingerprint1);
             QCOMPARE(announcement.advertisement.version, proto::kVersion);
             QCOMPARE(announcement.advertisement.port, quint16{4455});
             QVERIFY(!announcement.address.isNull());
@@ -159,9 +165,7 @@ private slots:
     void instanceDoesNotFindItself()
     {
         WinDnsSdDiscovery self(
-            configFor(advertisementOf(QStringLiteral("33333333333333333333333333333333"),
-                                      QStringLiteral("自己"), 4456),
-                      true));
+            configFor(advertisementOf(kFingerprint3, QStringLiteral("自己"), 4456), true));
         QSignalSpy found(&self, &WinDnsSdDiscovery::announced);
         mark(QStringLiteral("self-filter case: starting"));
         self.start();
@@ -175,8 +179,8 @@ private slots:
         QTest::qWait(3000);
         mark(QStringLiteral("self-filter case: done"));
         for (const QList<QVariant> &emission : found) {
-            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId
-                    != QStringLiteral("33333333333333333333333333333333"));
+            QVERIFY(emission.at(0).value<Announcement>().advertisement.deviceId()
+                    != deviceIdFromHex(kFingerprint3));
         }
     }
 
@@ -184,9 +188,7 @@ private slots:
     void browseOnlyNeedsNoPort()
     {
         WinDnsSdDiscovery browser(
-            configFor(advertisementOf(QStringLiteral("66666666666666666666666666666666"),
-                                      QStringLiteral("只要浏览"), 0),
-                      false));
+            configFor(advertisementOf(kFingerprint6, QStringLiteral("只要浏览"), 0), false));
         mark(QStringLiteral("browse-only case: starting"));
         browser.start();
         QVERIFY2(browser.lastError().isEmpty(),

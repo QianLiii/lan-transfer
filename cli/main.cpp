@@ -319,7 +319,6 @@ int runServe(const Options &options)
     // 发现只在服务起来之后启动：通告里必须是实际监听的那个端口（§3.1）。
     discovery::PeerDirectory directory;
     discovery::Advertisement self;
-    self.deviceId = identity->deviceId();
     self.name = settings.deviceName();
     self.fingerprint = identity->fingerprint().toHex();
     self.version = proto::kVersion;
@@ -432,7 +431,6 @@ int runPair(const Options &options)
     // 逐地址尝试用到的状态。runPair 要一直活到 exec() 返回，所以这些都能是局部量。
     discovery::PeerDirectory directory;
     discovery::Advertisement browseSelf;
-    browseSelf.deviceId = identity->deviceId();
     browseSelf.name = settings.deviceName();
     browseSelf.fingerprint = identity->fingerprint().toHex();
     browseSelf.version = proto::kVersion;
@@ -507,8 +505,12 @@ int runPair(const Options &options)
                              return;
                          }
 
+                         // deviceId 由握手里亲眼看到的指纹现算，不取报文里的任何字段
+                         // （protocol.h 约束 3）——写进信任库的键与写进去的指纹
+                         // 因此必然出自同一次握手。
+                         const QString peerDeviceId = deviceIdFrom(result.peerFingerprint);
                          writeStdout(QStringLiteral("设备名   %1").arg(result.info.name));
-                         writeStdout(QStringLiteral("deviceId %1").arg(result.info.deviceId));
+                         writeStdout(QStringLiteral("deviceId %1").arg(peerDeviceId));
                          writeStdout(QStringLiteral("指纹     %1")
                                          .arg(result.peerFingerprint.toHex()));
 
@@ -556,7 +558,7 @@ int runPair(const Options &options)
 
                          // 本端比对通过后写入信任库，写的是握手时观察到的指纹。
                          QString error;
-                         if (!trust->add({result.info.deviceId, result.peerFingerprint.toHex(),
+                         if (!trust->add({peerDeviceId, result.peerFingerprint.toHex(),
                                           result.info.name, QDateTime::currentDateTimeUtc()},
                                          &error)) {
                              writeStderr(error);
@@ -565,7 +567,7 @@ int runPair(const Options &options)
                          }
 
                          writeStdout(QStringLiteral("配对码一致，已配对 %1，已写入信任库。")
-                                         .arg(result.info.deviceId.left(8)));
+                                         .arg(peerDeviceId.left(8)));
                          QCoreApplication::exit(kExitOk);
                      });
 

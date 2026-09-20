@@ -79,7 +79,8 @@ WinDnsSdDiscovery::WinDnsSdDiscovery(Config config, QObject *parent)
     : Discovery(parent), m_config(std::move(config))
 {
     if (m_config.instanceName.isEmpty())
-        m_config.instanceName = QStringLiteral("lanpipe-%1").arg(m_config.self.deviceId.left(8));
+        m_config.instanceName =
+            QStringLiteral("lanpipe-%1").arg(m_config.self.deviceId().left(8));
 
     m_refreshTimer = new QTimer(this);
     m_refreshTimer->setInterval(m_config.refresh);
@@ -159,13 +160,11 @@ void WinDnsSdDiscovery::registerService()
     m_wideHost.assign({(hostName + QStringLiteral(".local")).toStdWString()});
 
     m_wideKeys.assign({
-        QString::fromLatin1(proto::kTxtKeyId).toStdWString(),
         QString::fromLatin1(proto::kTxtKeyFp).toStdWString(),
         QString::fromLatin1(proto::kTxtKeyName).toStdWString(),
         QString::fromLatin1(proto::kTxtKeyVer).toStdWString(),
     });
     m_wideValues.assign({
-        m_config.self.deviceId.toStdWString(),
         m_config.self.fingerprint.toStdWString(),
         QString::fromUtf8(txtTruncated(m_config.self.name)).toStdWString(),
         QString::number(m_config.self.version).toStdWString(),
@@ -374,18 +373,16 @@ void WinDnsSdDiscovery::adoptResolved(const QString &instanceName, const QString
         return; // 已经停了，这是取消前发出的回调
 
     Advertisement advertisement;
-    advertisement.deviceId = QString::fromLatin1(txt.value(QString::fromLatin1(proto::kTxtKeyId)));
     advertisement.fingerprint =
         QString::fromLatin1(txt.value(QString::fromLatin1(proto::kTxtKeyFp)));
     advertisement.name = QString::fromUtf8(txt.value(QString::fromLatin1(proto::kTxtKeyName)));
     advertisement.version = txt.value(QString::fromLatin1(proto::kTxtKeyVer)).toInt();
     advertisement.port = port;
 
-    if (advertisement.deviceId.size() != proto::kDeviceIdBytes * 2
-        || advertisement.fingerprint.size() != 64 || port == 0) {
+    // deviceId 由指纹现算，指纹不是 64 个十六进制字符就算字段不合法。
+    if (advertisement.deviceId().isEmpty() || port == 0)
         return; // 不是我们的服务，或者字段不合法
-    }
-    if (advertisement.deviceId == m_config.self.deviceId)
+    if (advertisement.fingerprint.compare(m_config.self.fingerprint, Qt::CaseInsensitive) == 0)
         return; // 自己的注册，系统也会报回来
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
