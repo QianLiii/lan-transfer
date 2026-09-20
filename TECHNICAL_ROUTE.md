@@ -1,6 +1,9 @@
 # LanPipe — Technical Route
 
-Working name `LanPipe`, replaceable. Status: draft 2, 2026-09-14. Supersedes draft 1
+Working name `LanPipe`, replaceable. Status: draft 2, 2026-09-14, **still current as a
+design document** — the decisions below are what the code implements. For the *state of the
+build* (what is finished, what is verified, what is not) see `README.md` and
+`docs/handover.md`; §9's table now carries a status column. Supersedes draft 1
 (`TECHNICAL_ROUTE.md.orig-draft1`).
 
 ## 0. Decision snapshot
@@ -673,15 +676,15 @@ of GUI churn; QML is a thin client added once the protocol is frozen. Mobile sta
 desktop 1.0 is in daily use, and only if §1.2 held. Sizes: S ≤ 2 days, M ≤ 1 week, L ≥ 2 weeks
 (solo, rough).
 
-| # | Milestone | Size | Acceptance |
-|---|---|---|---|
-| M0 | Skeleton: core layout, CMake (C++23), OpenSSL bundling, QtTest, headless CLI harness (`serve` / `send` / `pair`, with `--yes` and `--pin` for non-interactive CI), CI (Linux + Windows, plus a compile-and-`ctest` macOS job as a portability canary) | S | Core builds and `ctest` passes on all three; CLI runs headless |
-| M1 | Identity + TLS + receive server: cert generation via OpenSSL, SPKI fingerprint, keystore, `QTcpServer` + `QSslServer` + our HTTP parser (§5.15 subset), mutual TLS, `/ping` with nonces | M | `curl --cert --key` reaches `/ping`; a client without a certificate is rejected; a client whose certificate does not match the claimed `deviceId` is rejected; fingerprint prints to console. Parser negative tests: `Transfer-Encoding: chunked` → 400 + close with the body never decoded; duplicate `Content-Length` → 400; malformed or overflowing `Content-Length` → 400; header block beyond the caps → 400; a body exceeding the declared size is cut off mid-stream; a client that stalls after the headers is closed by the idle timeout |
-| M2 | Discovery: `Discovery` interface, system DNS-SD backend, UDP broadcast fallback, `PeerDirectory` with address sets | M | Two headless instances on **two real machines** discover each other; `dns-sd` / `avahi-browse` sees the service; with mDNS disabled, broadcast still finds peers; a wrong-first-address case falls back within the connect timeout. **The Windows DNS-SD path cannot be accepted in CI**: GitHub runners resolve nothing over mDNS, so `tst_windnssd` skips there (`SKIP_RETURN_CODE`, visible as `***Skipped`) and the round trip is accepted on a real Windows desktop. The Linux/Avahi path *is* exercised in CI. |
-| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | M | 1 GB desktop→desktop transfers correctly; cancel from either side leaves no temp data; 10 GB stays flat in memory; disk-full returns 507; a retried `PUT` does not corrupt; a killed peer times out instead of hanging |
-| M4 | Pairing + policy: nonce SAS, trust store, auto-accept rules, block list, rate limiting, collision naming, filename sanitizer | M | Via CLI harness: unknown sender → both sides show matching codes → paired → silent accept; a peer whose fingerprint changed is rejected; every hostile-filename vector is rejected; two concurrent `prepare`s → 409 |
-| M5 | QML frontend — Send / Receive / Devices / Pairing / Settings on the existing core models; no core changes | M | Full desktop flow via UI: discover, pair, transfer with progress; core untouched |
-| M6 | Desktop 1.0: settings, history, error paths, installers, firewall hint, diagnostics export. No notarization, no store signing — local use only | S–M | Windows and Linux installable and transferring in daily use |
+| # | Milestone | Status | Size | Acceptance |
+|---|---|---|---|---|
+| M0 | Skeleton: core layout, CMake (C++23), OpenSSL bundling, QtTest, headless CLI harness (`serve` / `send` / `pair`, with `--yes` and `--pin` for non-interactive CI), CI (Linux + Windows, plus a compile-and-`ctest` macOS job as a portability canary) | **DONE** | S | Core builds and `ctest` passes on all three; CLI runs headless |
+| M1 | Identity + TLS + receive server: cert generation via OpenSSL, SPKI fingerprint, keystore, `QTcpServer` + `QSslServer` + our HTTP parser (§5.15 subset), mutual TLS, `/ping` with nonces | **DONE** | M | `curl --cert --key` reaches `/ping`; a client without a certificate is rejected; fingerprint prints to console. Parser negative tests: `Transfer-Encoding: chunked` → 400 + close with the body never decoded; duplicate `Content-Length` → 400; malformed or overflowing `Content-Length` → 400; header block beyond the caps → 400; a body exceeding the declared size is cut off mid-stream; a client that stalls after the headers is closed by the idle timeout |
+| M2 | Discovery: `Discovery` interface, system DNS-SD backend, UDP broadcast fallback, `PeerDirectory` with address sets | **PARTIAL** | M | Two headless instances on **two real machines** discover each other; `dns-sd` / `avahi-browse` sees the service; with mDNS disabled, broadcast still finds peers; a wrong-first-address case falls back within the connect timeout. **The Windows DNS-SD path cannot be accepted in CI**: GitHub runners resolve nothing over mDNS, so `tst_windnssd` skips there (`SKIP_RETURN_CODE`, visible as `***Skipped`) and the round trip is accepted on a real Windows desktop. The Linux/Avahi path *is* exercised in CI. |
+| M3 | Transfer engine: prepare/upload/complete/abort, session temp dir, per-file rename, cancel in both directions, approved-size enforcement, free-space check, progress, idle timeout | not started | M | A client whose certificate does not match the `sender.id` claimed in `prepare` is rejected (moved here from M1: `/ping` carries no claim to compare against); 1 GB desktop→desktop transfers correctly; cancel from either side leaves no temp data; 10 GB stays flat in memory; disk-full returns 507; a retried `PUT` does not corrupt; a killed peer times out instead of hanging |
+| M4 | Pairing + policy: nonce SAS, trust store, auto-accept rules, block list, rate limiting, collision naming, filename sanitizer | **PARTIAL** | M | Via CLI harness: unknown sender → both sides show matching codes → paired → silent accept; a peer whose fingerprint changed is rejected; every hostile-filename vector is rejected; two concurrent `prepare`s → 409 |
+| M5 | QML frontend — Send / Receive / Devices / Pairing / Settings on the existing core models; no core changes | not started | M | Full desktop flow via UI: discover, pair, transfer with progress; core untouched |
+| M6 | Desktop 1.0: settings, history, error paths, installers, firewall hint, diagnostics export. No notarization, no store signing — local use only | not started | S–M | Windows and Linux installable and transferring in daily use |
 | — | Mobile (Windows/Linux were the near-term scope) | L each | Only after M6, and only if §1.2 held without rework |
 
 Total cost is not knowable until M4 lands; that point recalibrates everything after it.
