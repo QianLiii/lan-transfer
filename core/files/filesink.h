@@ -21,6 +21,8 @@ class FileSink
 public:
     virtual ~FileSink() = default;
 
+    // 理由同 FileSource：用户声明的拷贝构造会抑制隐式默认构造。
+    FileSink() = default;
     FileSink(const FileSink &) = delete;
     FileSink &operator=(const FileSink &) = delete;
 

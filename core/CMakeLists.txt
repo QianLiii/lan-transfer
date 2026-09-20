@@ -30,6 +30,8 @@ add_library(lanpipe_core STATIC
     settings.cpp
     tlsbackend.h
     tlsbackend.cpp
+    transfer/transfer.h
+    transfer/transfer.cpp
     transfer/ping.h
     transfer/ping.cpp
     transfer/pingclient.h
@@ -43,8 +45,18 @@ add_library(lanpipe_core STATIC
     discovery/peerconnector.cpp
     trust/truststore.h
     trust/truststore.cpp
+    trust/sanitizer.h
+    trust/sanitizer.cpp
+    trust/policy.h
+    trust/policy.cpp
     files/filesource.h
     files/filesink.h
+    files/localsource.h
+    files/localsource.cpp
+    files/localsink.h
+    files/localsink.cpp
+    files/recvdir.h
+    files/recvdir.cpp
     files/atomicwrite.h
     files/atomicwrite.cpp
 )

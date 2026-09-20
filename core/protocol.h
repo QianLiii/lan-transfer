@@ -125,6 +125,22 @@ inline constexpr auto kSasInputWindow = std::chrono::minutes(2);
 // 30000 ms，会与接收方的审批窗口精确竞争（§5.9）。
 inline constexpr auto kSenderHttpTimeout = std::chrono::minutes(3);
 
+// 发送方在 prepare / complete / abort 上的 HTTP 超时（§5.9）。这三处等的最长
+// 一环是接收方的审批窗口（kApprovalWindow），45 秒比它高出一截，又不至于让人
+// 在对方已经 504 之后还干等。PUT 用 kStallTimeout：它是按进度重置的空闲超时，
+// 大文件不会被总时长误杀。
+inline constexpr auto kSenderRequestTimeout = std::chrono::seconds(45);
+
+// 会话空闲多久即作废（§5.6 的 TTL）。发送方在 prepare 之后消失时，接收方没有
+// 任何连接可等——只有 TTL 能把这个唯一的活动会话名额放出来。
+//
+// 必须大于发送方的任一请求超时，否则发送方还在等、会话已经没了；
+// 又必须小于 kTempRetention，否则两次清理互相打脸，而活着的进程清理不了自己。
+inline constexpr auto kSessionTtl = std::chrono::minutes(5);
+
+// 临时数据的周期清扫间隔（§5.7）。启动时另扫一次。
+inline constexpr auto kTempSweepInterval = std::chrono::hours(1);
+
 // 逐个地址尝试时，每个地址的**连接建立**时限（§3.3）。同一台设备在多个网段上都有
 // 地址，连错一个要等 30–75 秒的 SYN 重试；换下一个比等它快得多。
 inline constexpr auto kAddressConnectTimeout = std::chrono::seconds(3);
@@ -156,6 +172,29 @@ inline constexpr auto kTempRetention = std::chrono::hours(24);
 
 // 同时只允许一个活动会话，其余 prepare 收到 409（§5.13）。
 inline constexpr std::size_t kMaxActiveSessions = 1;
+
+// sessionId 与 fileId 的字节数，十六进制形式是它的两倍字符数。两者都只由
+// randomHex() 产生、只出现在路径里，且路径里不含任何需要解码的字符（约束 2）。
+// sessionId 要猜不出来（128 位）；fileId 只需在会话内唯一。
+inline constexpr int kSessionIdBytes = 16;
+inline constexpr int kFileIdBytes = 8;
+
+// prepare 请求体的上限。文件列表在它里面，所以远比 ping 的体大；设上限的意义
+// 是不把内存上限交给对端（§5.15 的同一思路）。
+inline constexpr std::size_t kMaxPrepareBodySize = 256 * 1024;
+
+// 一次会话的文件数上限，与体上限一起封住 prepare 的资源占用。
+inline constexpr std::size_t kMaxFilesPerSession = 1024;
+
+// 设备名与文件名在**净化之前**的字节上限。净化会缩短名字，但缩短之前得先有个界。
+inline constexpr std::size_t kMaxDisplayNameBytes = 255;
+
+// 空闲空间检查的余量。留给元数据与文件系统自身的开销，免得「刚好够」的传输
+// 在最后一个字节上失败。
+inline constexpr std::uint64_t kFreeSpaceSlack = 1024 * 1024;
+
+// 最终名冲突时的最大重试次数（photo.jpg → photo (1).jpg → photo (2).jpg …）。
+inline constexpr int kMaxFinalNameAttempts = 100;
 
 // —————————————————————— 解析器上限（§5.15）——————————————————————
 

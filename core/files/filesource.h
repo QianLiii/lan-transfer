@@ -26,6 +26,9 @@ class FileSource
 public:
     virtual ~FileSource() = default;
 
+    // 必须显式写出来：下面的拷贝构造是用户声明的（哪怕 = delete），
+    // 隐式的默认构造因此不再生成，派生类会构造不出来。
+    FileSource() = default;
     FileSource(const FileSource &) = delete;
     FileSource &operator=(const FileSource &) = delete;
 

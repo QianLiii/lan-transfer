@@ -92,6 +92,34 @@ private slots:
     {
         QCOMPARE(kEphemeralPort, std::uint16_t{0});
     }
+
+    // §5.9：三层的等待窗口必须层层放宽。倒挂或相等时，先到期的那一层会把
+    // 「对方还在等」误报成失败，而症状是「有时好有时坏」。
+    void waitWindowsAreNested()
+    {
+        QVERIFY(kSenderRequestTimeout > kApprovalWindow);
+        QVERIFY(kSessionTtl > kSenderRequestTimeout);
+        QVERIFY(kTempRetention > kSessionTtl);
+    }
+
+    // id 的字节数与十六进制字符数是同一个东西的两面，路径解析按后者校验。
+    void idLengthsAreConsistent()
+    {
+        QVERIFY(kSessionIdBytes > 0);
+        QVERIFY(kFileIdBytes > 0);
+        QVERIFY(kSessionIdBytes >= kFileIdBytes); // 会话 id 要猜不出来，文件 id 只要唯一
+    }
+
+    // §5.13：一次只有一个活动会话，因此请求体与文件数的上限必须存在——
+    // 没有它们，prepare 的内存占用由对端决定。
+    void prepareLimitsAreBounded()
+    {
+        QVERIFY(kMaxPrepareBodySize > kMaxPingBodySize);
+        QVERIFY(kMaxFilesPerSession > 0);
+        QVERIFY(kMaxDisplayNameBytes > 0);
+        QVERIFY(kFreeSpaceSlack > 0);
+        QVERIFY(kMaxFinalNameAttempts > 1);
+    }
 };
 
 QTEST_APPLESS_MAIN(TestProtocol)
