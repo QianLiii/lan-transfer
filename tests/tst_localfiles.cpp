@@ -95,6 +95,10 @@ private slots:
     }
 
     // 数据在 commit 之前不出现在接收目录里，临时路径里也没有那个名字。
+    //
+    // 只断言这两条不变量，**不**断言临时目录里恰好有几个文件：QSaveFile 把数据暂存在
+    // 哪儿是它的实现细节，各平台还不一样——Linux 上用匿名临时文件（readdir 都看不见），
+    // Windows 上会在同目录建一个可见的临时文件。
     void sinkKeepsDataOutOfSightBeforeCommit()
     {
         LocalFileSink sink(m_dir.path(), kSessionId, kFileId, QStringLiteral("photo.jpg"),
@@ -104,8 +108,16 @@ private slots:
         writeAll(device.get(), QByteArray("abc"));
 
         QVERIFY(!QFile::exists(QDir(m_dir.path()).filePath(QStringLiteral("photo.jpg"))));
-        const QStringList inTemp = QDir(sink.tempDir()).entryList(QDir::Files);
-        QCOMPARE(inTemp, QStringList{kFileId + QStringLiteral(".part.meta")});
+
+        // 临时目录里的每一个条目都只能由 id 拼出来（§5.7：文件名不参与路径构造）。
+        const QStringList inTemp =
+            QDir(sink.tempDir()).entryList(QDir::Files | QDir::Hidden | QDir::System);
+        for (const QString &entry : inTemp) {
+            QVERIFY2(entry.startsWith(kFileId),
+                     qPrintable(QStringLiteral("临时目录里出现了不是由 id 拼出来的条目：%1（全部：%2）")
+                                    .arg(entry, inTemp.join(QStringLiteral(", ")))));
+        }
+        QVERIFY(QFile::exists(QDir(sink.tempDir()).filePath(kFileId + QStringLiteral(".part.meta"))));
 
         QVERIFY(sink.commit());
         QVERIFY(QFile::exists(QDir(m_dir.path()).filePath(QStringLiteral("photo.jpg"))));

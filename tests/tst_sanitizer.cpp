@@ -161,11 +161,32 @@ private slots:
     }
 
     // §5.11：封的是**全路径**，不只是名字——接收目录深的时候名字要更短。
+    //
+    // 上限随平台不同（Windows 是 259 个 UTF-16 单元，POSIX 是 4095 字节），所以期望值
+    // 也从平台推出来，不写死一个数：写死「4000 字符要通过」在 Windows 上必然失败。
     void finalPathLengthIsChecked()
     {
-        const QString dir = QString(4000, QLatin1Char('d'));
-        QVERIFY(checkFinalPath(dir, QStringLiteral("a.txt")).has_value());
-        QVERIFY(!checkFinalPath(dir, QString(200, QLatin1Char('n'))).has_value());
+#ifdef Q_OS_WIN
+        constexpr qsizetype kLimit = 259;
+#else
+        constexpr qsizetype kLimit = 4095;
+#endif
+        const QString name = QStringLiteral("a.txt");
+        // QDir::filePath 拼出来是 dir + '/' + name，正好卡在上限上的那条要通过。
+        const QString atLimit(kLimit - 1 - name.size(), QLatin1Char('d'));
+
+        // 不用 QVERIFY2 带 .error()：它的消息参数是无条件求值的，成功路径上也会调
+        // error()，而 std::expected 在成功时调 error() 会直接断言（tst_identity 里
+        // 记着同一条）。这里先取结果，失败了再问原因。
+        const auto exact = checkFinalPath(atLimit, name);
+        if (!exact.has_value()) {
+            QFAIL(qPrintable(QStringLiteral("卡在上限（%1）的路径被拒了：%2")
+                                 .arg(kLimit)
+                                 .arg(exact.error())));
+        }
+
+        const QString tooLong(atLimit.size() + 1, QLatin1Char('d'));
+        QVERIFY(!checkFinalPath(tooLong, name).has_value());
     }
 
     void uniqueNameKeepsNameWhenFree()
