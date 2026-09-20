@@ -1,7 +1,8 @@
 // 文件名净化与改名（§5.11）。全是纯函数，不需要事件循环。
 //
-// 完整敌意向量表是 M4 的验收；这里落的是接收路径真正依赖的那一批：
-// 路径穿越、保留名、尾点尾空格、控制字符、长度、以及冲突改名。
+// 主体是一张**向量表**：M4 的验收要求「每一个敌意文件名都被处理掉」。处理有两条
+// 出路——净化成一个安全的等价物，或直接拒——但两条都必须保证名字逃不出接收目录、
+// 也伪装不成别的文件。表就是这条规格的可执行形式。
 
 #include <QtTest>
 
@@ -14,6 +15,91 @@
 
 using namespace lanpipe;
 using namespace lanpipe::trust;
+
+namespace {
+
+struct FilenameVector
+{
+    const char *raw;
+    const char *expected; // 空指针 = 必须被拒；否则必须是净化后的结果
+};
+
+const QList<FilenameVector> &hostileVectors()
+{
+    static const QList<FilenameVector> vectors{
+        // ———— 路径穿越：只取最后一段（§5.11「strip separators」）————
+        {"../../etc/passwd", "passwd"},
+        {"..\\..\\windows\\system32\\config", "config"},
+        {"/absolute/path/file.txt", "file.txt"},
+        {"a/b/c/d.txt", "d.txt"},
+        {"a/../b.txt", "b.txt"},
+
+        // ———— 纯穿越：什么都不剩，拒 ————
+        {"..", nullptr},
+        {".", nullptr},
+        {"/", nullptr},
+        {"a/..", nullptr},
+        {"a/.", nullptr},
+        {"..\\..", nullptr},
+        {"", nullptr},
+
+        // ———— Windows 保留名（带扩展名、大小写不同都算）————
+        {"CON", nullptr},
+        {"con", nullptr},
+        {"CON.txt", nullptr},
+        {"PRN", nullptr},
+        {"AUX.log", nullptr},
+        {"NUL", nullptr},
+        {"COM1", nullptr},
+        {"com9.dat", nullptr},
+        {"LPT1", nullptr},
+        {"lpt9.tar.gz", nullptr},
+
+        // ———— 只是含这些字样，不该误伤 ————
+        {"CONSOLE.txt", "CONSOLE.txt"},
+        {"COM10", "COM10"},
+        {"NULLIFY", "NULLIFY"},
+        {"console", "console"},
+
+        // ———— 尾点 / 尾空格：Windows 上会被系统悄悄吃掉，于是名字与用户看到的不符 ————
+        {"file.", nullptr},
+        {"file ", nullptr},
+        {"file.txt.", nullptr},
+        {"file.txt ", nullptr},
+        {"file.. ", nullptr},
+
+        // ———— 控制字符与双向/零宽格式字符 ————
+        // 这些一律写成转义：源文件里出现真正的双向控制字符，本身就是那个隐患。
+        {"a\nb", nullptr},
+        {"a\rb", nullptr},
+        {"a\tb", nullptr},
+        {"a\x1b[31mb", nullptr},   // ANSI 转义
+        {"a\u202Eb", nullptr},     // 双向覆盖：能让扩展名反向显示
+        {"a\u202Db", nullptr},     // 双向嵌入
+        {"a\u2066b", nullptr},     // 双向隔离
+        {"a\u200Bb", nullptr},     // 零宽空格
+        {"a\uFEFFb", nullptr},     // BOM
+
+        // ———— Windows 上根本写不下去的字符 ————
+        {"a:b", nullptr},
+        {"a?b", nullptr},
+        {"a*b", nullptr},
+        {"a\"b", nullptr},
+        {"a|b", nullptr},
+        {"a<b", nullptr},
+        {"a>b", nullptr},
+
+        // ———— 正常名字照常通过（净化不是「一律改名」）————
+        {"photo.jpg", "photo.jpg"},
+        {"报告 2026.pdf", "报告 2026.pdf"},
+        {".bashrc", ".bashrc"},
+        {"a b  c.txt", "a b  c.txt"},
+        {"file (1).tar.gz", "file (1).tar.gz"},
+    };
+    return vectors;
+}
+
+} // namespace
 
 class TestSanitizer : public QObject
 {
@@ -34,106 +120,33 @@ private:
     }
 
 private slots:
-    void acceptsOrdinaryNames()
+    // §5.11 的向量表。
+    void hostileVectorTable()
     {
-        QCOMPARE(sanitized(QStringLiteral("photo.jpg")), QStringLiteral("photo.jpg"));
-        QCOMPARE(sanitized(QStringLiteral("报告 2026.pdf")), QStringLiteral("报告 2026.pdf"));
-        QCOMPARE(sanitized(QStringLiteral("a b  c.txt")), QStringLiteral("a b  c.txt"));
-        // 以点开头不是保留形态，只是隐藏文件。
-        QCOMPARE(sanitized(QStringLiteral(".bashrc")), QStringLiteral(".bashrc"));
-    }
+        for (const FilenameVector &vector : hostileVectors()) {
+            const QString raw = QString::fromUtf8(vector.raw);
+            const auto result = sanitizeFilename(raw);
 
-    // 目录分隔符只取最后一段：`/` 与 `\` 都算。
-    void stripsPathSeparators()
-    {
-        QCOMPARE(sanitized(QStringLiteral("a/b.txt")), QStringLiteral("b.txt"));
-        QCOMPARE(sanitized(QStringLiteral("a\\b.txt")), QStringLiteral("b.txt"));
-        QCOMPARE(sanitized(QStringLiteral("/etc/passwd")), QStringLiteral("passwd"));
-        QCOMPARE(sanitized(QStringLiteral("../../etc/passwd")), QStringLiteral("passwd"));
-        QCOMPARE(sanitized(QStringLiteral("a/../b.txt")), QStringLiteral("b.txt"));
-    }
+            if (vector.expected == nullptr) {
+                QVERIFY2(!result.has_value(),
+                         qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
+                continue;
+            }
 
-    void rejectsParentAndDotNames()
-    {
-        const QList<QString> bad{
-            QString(),
-            QStringLiteral("."),
-            QStringLiteral(".."),
-            QStringLiteral("a/.."),
-            QStringLiteral("a/."),
-            QStringLiteral("..\\.."),
-            QStringLiteral("/"),
-        };
-        for (const QString &raw : bad) {
-            QVERIFY2(!sanitizeFilename(raw).has_value(),
-                     qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
+            if (!result.has_value()) {
+                QTest::qFail(qPrintable(QStringLiteral("%1 被拒了，但应当净化成 %2：%3")
+                                            .arg(raw, QString::fromUtf8(vector.expected),
+                                                 result.error())),
+                             __FILE__, __LINE__);
+                continue;
+            }
+            QCOMPARE(*result, QString::fromUtf8(vector.expected));
         }
     }
 
-    void rejectsWindowsReservedNames()
-    {
-        const QList<QString> bad{
-            QStringLiteral("CON"),   QStringLiteral("con"),    QStringLiteral("CON.txt"),
-            QStringLiteral("NUL"),   QStringLiteral("PRN.dat"), QStringLiteral("AUX"),
-            QStringLiteral("COM1"),  QStringLiteral("com9.log"), QStringLiteral("LPT1"),
-            QStringLiteral("lpt9.tar.gz"),
-        };
-        for (const QString &raw : bad) {
-            QVERIFY2(!sanitizeFilename(raw).has_value(),
-                     qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
-        }
-        // 只挡住主干，不是把含这些字样的名字一律拒了。
-        QCOMPARE(sanitized(QStringLiteral("CONSOLE.txt")), QStringLiteral("CONSOLE.txt"));
-        QCOMPARE(sanitized(QStringLiteral("COM10")), QStringLiteral("COM10"));
-    }
-
-    void rejectsTrailingDotOrSpace()
-    {
-        const QList<QString> bad{QStringLiteral("a."), QStringLiteral("a "),
-                                 QStringLiteral("a.txt "), QStringLiteral("a.. ")};
-        for (const QString &raw : bad) {
-            QVERIFY2(!sanitizeFilename(raw).has_value(),
-                     qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
-        }
-    }
-
-    // 控制字符与双向控制符：前者在 Windows 上本就非法，后者能让名字在屏幕上
-    // 显示成另一个样子。
-    void rejectsControlAndFormatCharacters()
-    {
-        QList<QString> bad;
-        bad << QStringLiteral("a\nb");
-        bad << QStringLiteral("a\tb");
-        bad << QStringLiteral("a%1b").arg(QChar(0x7F));   // DEL
-        bad << QStringLiteral("a%1b").arg(QChar(0x9F));   // C1
-        bad << QStringLiteral("a%1b").arg(QChar(0x202E)); // 双向覆盖
-        bad << QStringLiteral("a%1b").arg(QChar(0x2066)); // 双向隔离
-        bad << QStringLiteral("a%1b").arg(QChar(0x200B)); // 零宽空格
-        bad << QStringLiteral("a%1b").arg(QChar(0xFEFF)); // BOM
-
-        for (const QString &raw : bad) {
-            QVERIFY2(!sanitizeFilename(raw).has_value(),
-                     qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
-        }
-    }
-
-    // 比 §5.11 的清单多出的一类：Windows 上根本写不下去的字符。
-    void rejectsCharactersWindowsCannotStore()
-    {
-        const QList<QString> bad{
-            QStringLiteral("a:b.txt"), QStringLiteral("a?b.txt"), QStringLiteral("a*b.txt"),
-            QStringLiteral("a|b.txt"), QStringLiteral("a\"b.txt"), QStringLiteral("a<b.txt"),
-            QStringLiteral("a>b.txt"),
-        };
-        for (const QString &raw : bad) {
-            QVERIFY2(!sanitizeFilename(raw).has_value(),
-                     qPrintable(QStringLiteral("未被拒绝：%1").arg(raw)));
-        }
-    }
-
+    // 名字长度按字节算：超一个字节也要拒（上限在净化之前就生效）。
     void rejectsOverlongNames()
     {
-        // 上限按字节算：超一个字节也要拒。
         const QString atLimit(static_cast<qsizetype>(proto::kMaxDisplayNameBytes), QLatin1Char('a'));
         QCOMPARE(sanitized(atLimit).size(), atLimit.size());
 
@@ -147,6 +160,7 @@ private slots:
         QVERIFY(!sanitizeFilename(wide).has_value());
     }
 
+    // §5.11：封的是**全路径**，不只是名字——接收目录深的时候名字要更短。
     void finalPathLengthIsChecked()
     {
         const QString dir = QString(4000, QLatin1Char('d'));

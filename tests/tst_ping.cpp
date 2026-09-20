@@ -330,6 +330,29 @@ private slots:
         QVERIFY(!PingService::handles(QByteArrayView("/api/v1/pingX")));
     }
 
+    // 被屏蔽的设备连配对请求也拒：屏蔽的意义就是不再被它打扰，而它同样会弹框。
+    void blockedPeerCannotPair()
+    {
+        QString error;
+        QVERIFY(m_trust->block({m_sender.deviceId(), QStringLiteral("发送方"),
+                                QDateTime::currentDateTimeUtc()},
+                               &error));
+
+        PingClient client(*m_trust);
+        QSignalSpy finished(&client, &PingClient::finished);
+        QSignalSpy inputRequired(m_service, &PingService::inputRequired);
+
+        client.start(serverUrl(), m_sender, QStringLiteral("发送方"));
+
+        QTRY_COMPARE(finished.count(), 1);
+        const auto result = finished.first().at(0).value<PingClient::Result>();
+        QVERIFY(!result.ok);
+        QVERIFY(result.error.contains(QStringLiteral("403")));
+        // 关键的一条：接收方连用户都没问。peerAdopted 会在握手时照常发出去
+        // （发送方那半要先显示出来），所以它不能用来判断配对成没成。
+        QCOMPARE(inputRequired.count(), 0);
+    }
+
     void jsonRoundTripsAndRejectsJunk()
     {
         const PingRequest request{QString(32, QLatin1Char('a')), QStringLiteral("笔记本")};

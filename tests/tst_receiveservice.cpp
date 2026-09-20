@@ -490,6 +490,98 @@ private slots:
         QCOMPARE(approval.count(), 0);
     }
 
+    // —————————————— 黑名单与限流（§4）——————————————
+
+    // 被屏蔽的设备连框都不弹——否则局域网里任何一台设备都能无限打扰用户。
+    void blockedSenderIsRejectedWithoutPrompting()
+    {
+        QString error;
+        QVERIFY(m_trust->block({m_sender.deviceId(), QStringLiteral("发送方"),
+                                QDateTime::currentDateTimeUtc()},
+                               &error));
+
+        QSignalSpy approval(m_service, &ReceiveService::approvalRequired);
+        QByteArray body;
+        QCOMPARE(exchange(postRequest(proto::kPathPrepare.data(),
+                                      prepareBody({fileEntry(kFileId, QStringLiteral("photo.jpg"), 3)}, 3)),
+                          &body),
+                 403);
+        QVERIFY(body.contains("屏蔽"));
+        QCOMPARE(approval.count(), 0);
+        QVERIFY(!m_service->hasActiveSession());
+    }
+
+    // 另一个进程写的黑名单也要生效：`lanpipe block` 与 `serve` 不是一个进程，
+    // 而用户期望「屏蔽之后它再来就被拒」。接收方在每次 prepare 前重读信任库。
+    void blockWrittenByAnotherProcessTakesEffect()
+    {
+        auto other = trust::TrustStore::load(m_dir.filePath(QStringLiteral("trust.json")));
+        if (!other.has_value())
+            QFAIL(qPrintable(other.error()));
+        QString error;
+        QVERIFY(other->block({m_sender.deviceId(), QStringLiteral("外面屏蔽的"),
+                              QDateTime::currentDateTimeUtc()},
+                             &error));
+
+        QSignalSpy approval(m_service, &ReceiveService::approvalRequired);
+        QByteArray body;
+        QCOMPARE(exchange(postRequest(proto::kPathPrepare.data(),
+                                      prepareBody({fileEntry(kFileId, QStringLiteral("photo.jpg"), 3)}, 3)),
+                          &body),
+                 403);
+        QVERIFY(body.contains("屏蔽"));
+        QCOMPARE(approval.count(), 0);
+    }
+
+    // 同一条设备反复来，超过限流额度就不再问用户。
+    void promptingTooOftenIsRejectedWithoutAskingAgain()
+    {
+        QSignalSpy approval(m_service, &ReceiveService::approvalRequired);
+        const QByteArray body =
+            prepareBody({fileEntry(kFileId, QStringLiteral("photo.jpg"), 3)}, 3);
+
+        for (int i = 0; i < proto::kMaxPromptsPerWindow; ++i) {
+            RawClient client(rawclient::withCertificate(m_sender), this);
+            client.connectTo(m_port);
+            client.send(postRequest(proto::kPathPrepare.data(), body));
+            QTRY_COMPARE(approval.count(), i + 1);
+            m_service->submitApproval(false);
+            QTRY_VERIFY(client.finished());
+            QCOMPARE(client.statusCode(), 403);
+        }
+
+        QByteArray rejected;
+        QCOMPARE(exchange(postRequest(proto::kPathPrepare.data(), body), &rejected), 403);
+        QVERIFY(rejected.contains("频繁"));
+        QCOMPARE(approval.count(), proto::kMaxPromptsPerWindow); // 没有再弹
+    }
+
+    // 审批框上的「拒绝并屏蔽」要把决定留在盘上，之后连框都不弹。
+    void blockingFromThePromptPersists()
+    {
+        QSignalSpy approval(m_service, &ReceiveService::approvalRequired);
+        QSignalSpy blocked(m_service, &ReceiveService::peerBlocked);
+
+        RawClient client(rawclient::withCertificate(m_sender), this);
+        client.connectTo(m_port);
+        client.send(postRequest(proto::kPathPrepare.data(),
+                                prepareBody({fileEntry(kFileId, QStringLiteral("photo.jpg"), 3)}, 3)));
+        QTRY_COMPARE(approval.count(), 1);
+
+        m_service->submitBlock();
+        QTRY_VERIFY(client.finished());
+        QCOMPARE(client.statusCode(), 403);
+        QCOMPARE(blocked.count(), 1);
+        QVERIFY(m_trust->isBlocked(m_sender.deviceId()));
+
+        QByteArray body;
+        QCOMPARE(exchange(postRequest(proto::kPathPrepare.data(),
+                                      prepareBody({fileEntry(kFileId, QStringLiteral("photo.jpg"), 3)}, 3)),
+                          &body),
+                 403);
+        QCOMPARE(approval.count(), 1); // 第二次没再打扰用户
+    }
+
     void secondPrepareIs409WithRetryAfter()
     {
         QVERIFY(!acceptSingleFile(3).isEmpty());

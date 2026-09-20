@@ -251,6 +251,13 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
     // 身份只取自连接层（§4）：不取请求里的任何字段，也就没有「声称的身份」要校验。
     const net::PeerIdentity peer = connection.peer();
 
+    // 黑名单与配对关系可能被另一个进程改过（`lanpipe block` 与 `serve` 不是一个进程）。
+    // 每次 prepare 之前重读一遍，用户在别处屏蔽一台设备就立刻生效。文件很小，
+    // 而 prepare 是一次传输一次的操作，不在热路径上。
+    QString reloadError;
+    if (!m_trust.reload(&reloadError))
+        qWarning("lanpipe: 重新载入信任库失败，沿用内存里的那份：%s", qPrintable(reloadError));
+
     // 已配对但指纹变了：拒绝，且优先于任何策略——开放模式也不该放行一台换过密钥
     // 的设备（§4 规则 5）。
     if (m_trust.identityChanged(peer.deviceId, peer.fingerprint.toHex())) {
@@ -317,11 +324,25 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
 
     const trust::Decision decision = trust::decide(m_settings, m_trust, peer);
     if (decision == trust::Decision::Reject) {
-        finishPrepare(connection, false);
+        // 黑名单：不回「等审批」，直接说清楚，用户不会再被它打扰。
+        dropPendingSessionTempData();
+        m_pendingEntries.clear();
+        respondError(connection, Status::Forbidden,
+                     QStringLiteral("这台设备已被屏蔽（%1）").arg(peer.deviceId.left(8)));
         return;
     }
     if (decision == trust::Decision::Accept) {
         finishPrepare(connection, true);
+        return;
+    }
+
+    // 限流：提示疲劳是最短的攻击路径，问得太频繁就不再问，直接拒。
+    if (!m_promptLimiter.allowPrompt(peer.deviceId)) {
+        dropPendingSessionTempData();
+        m_pendingEntries.clear();
+        respondError(connection, Status::Forbidden,
+                     QStringLiteral("这台设备请求过于频繁（%1）：稍后再试")
+                         .arg(peer.deviceId.left(8)));
         return;
     }
 
@@ -337,6 +358,28 @@ void ReceiveService::submitApproval(bool accepted)
     if (!m_pendingApproval)
         return; // 超时或对端已经断开
     finishPrepare(*m_pendingApproval, accepted);
+}
+
+void ReceiveService::submitBlock()
+{
+    if (!m_pendingApproval)
+        return;
+
+    trust::TrustStore::BlockedEntry entry;
+    entry.deviceId = m_pendingPeer.deviceId;
+    entry.name = m_pendingRequest.senderName;
+    entry.blockedAt = QDateTime::currentDateTimeUtc();
+
+    QString error;
+    if (!m_trust.block(entry, &error)) {
+        // 落盘失败也照样拒——用户点的是「拒绝并屏蔽」，至少要做到拒绝。
+        qWarning("lanpipe: 屏蔽 %s 失败：%s", qPrintable(entry.deviceId.left(8)),
+                 qPrintable(error));
+    } else {
+        emit peerBlocked(entry.deviceId, entry.name);
+    }
+
+    finishPrepare(*m_pendingApproval, false);
 }
 
 void ReceiveService::finishPrepare(http::HttpConnection &connection, bool accepted, bool timedOut)

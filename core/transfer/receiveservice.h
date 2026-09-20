@@ -11,6 +11,7 @@
 #include "http/httpconnection.h"
 #include "settings.h"
 #include "transfer/receivesession.h"
+#include "trust/policy.h"
 #include "trust/truststore.h"
 
 #include <QDateTime>
@@ -44,6 +45,9 @@ public:
     // 界面把审批结果交回来。必须在 approvalRequired 之后调用一次。
     void submitApproval(bool accepted);
 
+    // 用户选了「拒绝并屏蔽」：写进黑名单，然后按拒绝处理。
+    void submitBlock();
+
     // 接收方取消当前会话（界面取消、CLI 的 SIGINT）。没有会话时是无操作。
     void cancelActive();
 
@@ -67,6 +71,7 @@ signals:
     void fileProgress(const QString &fileId, quint64 received, quint64 total);
     void fileCommitted(const QString &fileId, const QString &finalPath, quint64 bytes);
     void sessionFinished(const QString &sessionId, bool completed);
+    void peerBlocked(const QString &deviceId, const QString &name);
 
 private:
     void handlePrepare(http::HttpConnection &connection);
@@ -103,6 +108,7 @@ private:
     trust::TrustStore &m_trust;
     QString m_receiveDir;
     FreeSpaceProbe m_freeSpace;
+    trust::PromptLimiter m_promptLimiter;
 
     std::unique_ptr<ReceiveSession> m_session;
     QTimer *m_sessionTtl = nullptr;

@@ -188,6 +188,19 @@ void PingService::onRequestComplete(http::HttpConnection &connection, const QByt
     const net::PeerIdentity &peer = connection.peer();
     const QString observed = peer.fingerprint.toHex();
 
+    // 黑名单可能被另一个进程改过（`lanpipe block` 与 `serve` 不是一个进程），
+    // 所以动手之前重读一遍。屏蔽的意义就是不再被它打扰——配对请求也算打扰。
+    QString reloadError;
+    if (!m_trust.reload(&reloadError))
+        qWarning("lanpipe: 重新载入信任库失败，沿用内存里的那份：%s", qPrintable(reloadError));
+
+    if (m_trust.isBlocked(peer.deviceId)) {
+        const QString reason = QStringLiteral("这台设备已被屏蔽（%1）").arg(peer.deviceId.left(8));
+        connection.respond(http::Response::text(http::Status::Forbidden, reason));
+        emit pairingFinished(peer.deviceId, Outcome::Rejected);
+        return;
+    }
+
     // 已配对但指纹变了：这台设备换过密钥，必须拒绝，绝不静默重新配对（§4 规则 5）。
     if (m_trust.identityChanged(peer.deviceId, observed)) {
         const QString reason = QStringLiteral("设备身份已变（%1）：请删除旧配对后重新配对")

@@ -112,6 +112,70 @@ private slots:
 
         QCOMPARE(decide(*m_settings, *m_trust, peerWith(kOtherFingerprint)), Decision::Prompt);
     }
+
+    // —————————————— 黑名单（§4）——————————————
+
+    // 屏蔽优先于一切：连开放模式都不该把它放回来。
+    void blockedPeerIsRejectedEvenInOpenMode()
+    {
+        const net::PeerIdentity peer = peerWith(kPeerFingerprint);
+        m_settings->setOpenMode(true);
+
+        QString error;
+        QVERIFY(m_trust->block({peer.deviceId, QStringLiteral("广告机"),
+                                QDateTime::currentDateTimeUtc()},
+                               &error));
+
+        QCOMPARE(decide(*m_settings, *m_trust, peer), Decision::Reject);
+    }
+
+    // 自动接受也压不过黑名单。
+    void blockedPairedPeerIsStillRejected()
+    {
+        const net::PeerIdentity peer = peerWith(kPeerFingerprint);
+        pair(peer);
+        m_settings->setReceivePolicy(ReceivePolicy::AutoAcceptPaired);
+        QCOMPARE(decide(*m_settings, *m_trust, peer), Decision::Accept);
+
+        QString error;
+        QVERIFY(m_trust->block({peer.deviceId, QStringLiteral("对端"),
+                                QDateTime::currentDateTimeUtc()},
+                               &error));
+
+        QCOMPARE(decide(*m_settings, *m_trust, peer), Decision::Reject);
+    }
+
+    // —————————————— 提示限流（§4）——————————————
+
+    void promptLimiterAllowsUpToTheMaximum()
+    {
+        PromptLimiter limiter(3, std::chrono::seconds(60));
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now));
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now));
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now));
+        QVERIFY(!limiter.allowPrompt(QStringLiteral("a"), now));
+
+        // 限流是按设备分的：一台设备闹得凶，不该连累另一台。
+        QVERIFY(limiter.allowPrompt(QStringLiteral("b"), now));
+
+        // 窗口滑过去之后重新放行。
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now.addSecs(61)));
+    }
+
+    void promptLimiterWindowSlides()
+    {
+        PromptLimiter limiter(2, std::chrono::seconds(60));
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now));
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now.addSecs(30)));
+        QVERIFY(!limiter.allowPrompt(QStringLiteral("a"), now.addSecs(31)));
+
+        // 第一次已经滑出窗口，于是又有一个名额。
+        QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now.addSecs(61)));
+    }
 };
 
 QTEST_APPLESS_MAIN(TestPolicy)

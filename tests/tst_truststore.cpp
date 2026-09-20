@@ -160,6 +160,121 @@ private slots:
         QVERIFY(!store->identityChanged(deviceId, QString(64, QLatin1Char('B'))));
     }
 
+    // —————————————— 黑名单（§4）——————————————
+
+    void blockedEntriesPersist()
+    {
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+
+        const QString deviceId = QString(32, QLatin1Char('a'));
+        QString error;
+        QVERIFY(store->block({deviceId, QStringLiteral("广告机"), QDateTime::currentDateTimeUtc()}, &error));
+        QVERIFY(store->isBlocked(deviceId));
+
+        auto reloaded = TrustStore::load(path());
+        if (!reloaded.has_value())
+            QFAIL(qPrintable(reloaded.error()));
+        QVERIFY(reloaded->isBlocked(deviceId));
+        QCOMPARE(reloaded->blocked().size(), 1);
+        QCOMPARE(reloaded->blocked().first().name, QStringLiteral("广告机"));
+    }
+
+    // 屏蔽一台已配对设备不会把配对关系摘掉：屏蔽优先于配对，恢复时配对还在。
+    void blockingKeepsThePairing()
+    {
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+
+        const QString deviceId = QString(32, QLatin1Char('b'));
+        QString error;
+        QVERIFY(store->add({deviceId, QString(64, QLatin1Char('c')), QStringLiteral("对端"),
+                            QDateTime::currentDateTimeUtc()},
+                           &error));
+        QVERIFY(store->block({deviceId, QStringLiteral("对端"), QDateTime::currentDateTimeUtc()}, &error));
+
+        QVERIFY(store->isBlocked(deviceId));
+        QVERIFY(store->contains(deviceId));
+
+        QVERIFY(store->unblock(deviceId, &error));
+        QVERIFY(!store->isBlocked(deviceId));
+        QVERIFY(store->contains(deviceId)); // 配对关系自始至终都在
+    }
+
+    void unblockingAnUnknownDeviceIsANoOp()
+    {
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+
+        QString error;
+        QVERIFY(store->unblock(QString(32, QLatin1Char('d')), &error));
+        QVERIFY(store->blocked().isEmpty());
+    }
+
+    // 另一个进程改过盘上的文件之后，reload() 要看得见——`lanpipe block` 与 `serve`
+    // 不是一个进程，而用户期望屏蔽立刻生效。
+    void reloadSeesChangesMadeElsewhere()
+    {
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+
+        const QString deviceId = QString(32, QLatin1Char('e'));
+        QVERIFY(!store->isBlocked(deviceId));
+
+        {
+            // 模拟另一个进程：另开一个实例写同一个文件。
+            auto other = TrustStore::load(path());
+            if (!other.has_value())
+                QFAIL(qPrintable(other.error()));
+            QString error;
+            QVERIFY(other->block({deviceId, QStringLiteral("外面屏蔽的"),
+                                  QDateTime::currentDateTimeUtc()},
+                                 &error));
+        }
+
+        QVERIFY(!store->isBlocked(deviceId)); // 还没重读，看不见
+        QVERIFY(store->reload());
+        QVERIFY(store->isBlocked(deviceId));
+    }
+
+    // 重读失败时保持原样：一次读失败不该把内存里的配对关系清掉。
+    void reloadKeepsStateWhenTheFileIsGone()
+    {
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+
+        const QString deviceId = QString(32, QLatin1Char('f'));
+        QString error;
+        QVERIFY(store->block({deviceId, QStringLiteral("x"), QDateTime::currentDateTimeUtc()},
+                             &error));
+
+        QVERIFY(QFile::remove(path()));
+        QVERIFY(store->reload());
+        // 文件没了就是空表——这是「还没配过对」的正常状态，不是错误。
+        QVERIFY(!store->isBlocked(deviceId));
+    }
+
+    // 黑名单是后加的字段：老文件里没有它，加载时应当当成空名单，而不是「损坏」。
+    void fileWithoutABlockListStillLoads()
+    {
+        QFile file(path());
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(R"({"version":1,"peers":[{"deviceId":"aaa","fingerprint":"bbb",)"
+                   R"("name":"旧记录","pairedAt":"2026-01-01T00:00:00Z"}]})");
+        file.close();
+
+        auto store = TrustStore::load(path());
+        if (!store.has_value())
+            QFAIL(qPrintable(store.error()));
+        QCOMPARE(store->size(), 1);
+        QVERIFY(store->blocked().isEmpty());
+    }
+
     // 损坏的信任库必须报错，不能当成空表——那等于把用户所有配对关系悄悄清掉。
     void corruptedFileIsReported()
     {

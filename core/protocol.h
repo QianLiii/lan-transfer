@@ -141,6 +141,12 @@ inline constexpr auto kSessionTtl = std::chrono::minutes(5);
 // 临时数据的周期清扫间隔（§5.7）。启动时另扫一次。
 inline constexpr auto kTempSweepInterval = std::chrono::hours(1);
 
+// 审批提示的限流（§4 接收策略）：同一台设备在这个窗口里最多弹几次，超过就静默拒绝。
+// 没有它，局域网里任何一台设备都能无限弹框，而提示疲劳是最短的攻击路径——
+// 用户点几次「接受」之后就不再看了。
+inline constexpr int kMaxPromptsPerWindow = 3;
+inline constexpr auto kPromptWindow = std::chrono::minutes(1);
+
 // 逐个地址尝试时，每个地址的**连接建立**时限（§3.3）。同一台设备在多个网段上都有
 // 地址，连错一个要等 30–75 秒的 SYN 重试；换下一个比等它快得多。
 inline constexpr auto kAddressConnectTimeout = std::chrono::seconds(3);
