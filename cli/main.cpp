@@ -333,7 +333,8 @@ int runServe(const Options &options)
     QObject::connect(
         &ping, &transfer::PingService::inputRequired,
         [&ping](const QString &peerDeviceId, const QString &peerName, const SasCode &code) {
-            writeStdout(QStringLiteral("配对请求：%1（%2）").arg(peerName, peerDeviceId.left(8)));
+            writeStdout(QStringLiteral("配对请求：%1（%2）")
+                            .arg(trust::displaySafe(peerName), peerDeviceId.left(8)));
             writeStdout(QStringLiteral("本机显示的码 %1 —— 请念给对方").arg(code.shown));
             writeStdout(
                 QStringLiteral("请输入对方屏幕上显示的 %1 位数字：").arg(proto::kSasCodeDigits));
@@ -903,7 +904,7 @@ int runPair(const Options &options)
         if (connector.has_value())
             return; // 已经在连了
         writeStdout(QStringLiteral("发现 %1（%2），%3 个地址")
-                        .arg(peer.name, peer.deviceId.left(8))
+                        .arg(trust::displaySafe(peer.name), peer.deviceId.left(8))
                         .arg(peer.addresses.size()));
         connector.emplace(peer.addresses, proto::kAddressConnectTimeout);
         QObject::connect(&*connector, &discovery::PeerConnector::attemptTimedOut,
@@ -948,7 +949,7 @@ int runPair(const Options &options)
                          // （protocol.h 约束 3）——写进信任库的键与写进去的指纹
                          // 因此必然出自同一次握手。
                          const QString peerDeviceId = deviceIdFrom(result.peerFingerprint);
-                         writeStdout(QStringLiteral("设备名   %1").arg(result.info.name));
+                         writeStdout(QStringLiteral("设备名   %1").arg(trust::displaySafe(result.info.name)));
                          writeStdout(QStringLiteral("deviceId %1").arg(peerDeviceId));
                          writeStdout(QStringLiteral("指纹     %1")
                                          .arg(result.peerFingerprint.toHex()));

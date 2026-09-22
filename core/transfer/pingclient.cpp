@@ -4,6 +4,7 @@
 #include "protocol.h"
 #include "random.h"
 #include "sas.h"
+#include "trust/sanitizer.h"
 
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -110,10 +111,11 @@ void PingClient::onFinished(QNetworkReply *reply, quint64 generation)
     // 先看 HTTP 状态，再看 QNAM 的网络错误：4xx/5xx 同时会把 reply->error() 置成
     // 对应的分类错误，若先看后者，对端给的那句可读原因就被 "Conflict" 这类词盖掉了。
     if (status != 200 || reply->error() != QNetworkReply::NoError) {
+        // 响应体是对端可控的字节，进终端之前先剥控制字符。
         result.error = status > 0
             ? QStringLiteral("对端返回 %1：%2")
                   .arg(status)
-                  .arg(QString::fromUtf8(body).trimmed())
+                  .arg(trust::displaySafe(QString::fromUtf8(body).trimmed()))
             : QStringLiteral("请求失败：%1").arg(reply->errorString());
         report(result);
         return;

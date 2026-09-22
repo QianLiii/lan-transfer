@@ -254,6 +254,22 @@ private slots:
         QVERIFY(!errorBody(QStringLiteral("忙"), 0).contains(QStringLiteral("retryAfter")));
     }
 
+    // 对端可控的字节进终端之前必须剥掉控制字符：一段 ANSI 序列就能在运维者终端里
+    // 伪造出整行输出（比如一行「已接收」）。
+    void reasonFromStripsControlCharacters()
+    {
+        const QByteArray hostile("boom\x1b[2K\r已接收");
+        const QString reason = reasonFrom(hostile);
+        QVERIFY(!reason.contains(QChar(0x1B)));
+        QVERIFY(!reason.contains(QLatin1Char('\r')));
+        QVERIFY(reason.startsWith(QStringLiteral("boom")));
+
+        // 走 JSON 的 reason 字段那条路同样要剥。
+        const QByteArray json =
+            QJsonDocument(errorBody(QStringLiteral("忙\x1b[31m"))).toJson(QJsonDocument::Compact);
+        QVERIFY(!reasonFrom(json).contains(QChar(0x1B)));
+    }
+
     void reasonFromFallsBackToRawText()
     {
         const QByteArray json = QJsonDocument(errorBody(QStringLiteral("对端忙"))).toJson(QJsonDocument::Compact);

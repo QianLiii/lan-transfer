@@ -1,5 +1,7 @@
 #include "transfer.h"
 
+#include "trust/sanitizer.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
@@ -278,15 +280,21 @@ QJsonObject errorBody(const QString &reason, int retryAfterSeconds)
 
 QString reasonFrom(const QByteArray &body)
 {
+    QString text;
     const QJsonDocument document = QJsonDocument::fromJson(body);
     if (document.isObject()) {
         const QJsonValue reason = document.object().value(QStringLiteral("reason"));
-        if (reason.isString() && !reason.toString().isEmpty())
-            return reason.toString();
+        if (reason.isString())
+            text = reason.toString();
     }
-    // 对端没按我们的格式回话（另一个实现，或中途被改过），把原文端出去，
-    // 总比回一句「未知错误」有用。
-    return QString::fromUtf8(body).trimmed();
+    // 对端没按我们的格式回话（另一个实现，或中途被改过）时用原文，总比回一句
+    // 「未知错误」有用。
+    if (text.isEmpty())
+        text = QString::fromUtf8(body).trimmed();
+
+    // 两条路都要过 displaySafe：这段字节完全由对端控制，而它最终会打到用户的终端上
+    // ——一个 ANSI 序列就能伪造出一行「已接收」。
+    return trust::displaySafe(text);
 }
 
 } // namespace lanpipe::transfer
