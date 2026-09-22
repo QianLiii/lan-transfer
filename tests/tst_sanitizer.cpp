@@ -54,6 +54,11 @@ const QList<FilenameVector> &hostileVectors()
         {"com9.dat", nullptr},
         {"LPT1", nullptr},
         {"lpt9.tar.gz", nullptr},
+        {"CONIN$", nullptr},   // 控制台设备名，与 CON 同属保留
+        {"CONOUT$", nullptr},
+        {"conout$", nullptr},
+        {"COM\u00B9", nullptr}, // 上标变体在 Windows 上同样是设备名
+        {"LPT\u00B2.txt", nullptr},
 
         // ———— 只是含这些字样，不该误伤 ————
         {"CONSOLE.txt", "CONSOLE.txt"},

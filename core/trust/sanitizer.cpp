@@ -23,6 +23,11 @@ const QStringList &reservedNames()
         QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
         QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
         QStringLiteral("LPT9"),
+        // 控制台设备名（带 $，与 CON 之类同属保留名）。
+        QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"),
+        // 上标变体在 Windows 上同样被当成设备名（微软的命名文档点名）。
+        QStringLiteral("COM\u00B9"), QStringLiteral("COM\u00B2"), QStringLiteral("COM\u00B3"),
+        QStringLiteral("LPT\u00B9"), QStringLiteral("LPT\u00B2"), QStringLiteral("LPT\u00B3"),
     };
     return names;
 }
