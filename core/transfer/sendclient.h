@@ -58,6 +58,13 @@ public:
     [[nodiscard]] bool peerContacted() const { return m_peerContacted; }
 
 signals:
+    // 握手完成、对端指纹已核对。**每次传输只发一次，且在 prepare 之前**。
+    //
+    // 调用方据此撤销「逐个地址的时限」：那个时限只管建立连接，而 prepare 的 200
+    // 要等对方的用户点审批（最长 kApprovalWindow）。挂在 prepared 上会让一次正常
+    // 的、需要人工审批的传输在 3 秒后被当成地址不可用。
+    void connected();
+
     void prepared(const QString &sessionId);
     void fileProgress(const QString &fileId, quint64 sent, quint64 total);
     void finished(const lanpipe::transfer::SendClient::Result &result);
@@ -87,6 +94,8 @@ private:
 
     void fail(const QString &error);
     void reportResult(Result result);
+    // 对端已经通过指纹判定：报一次 connected()（幂等）。
+    void notePeerReached();
 
     QNetworkAccessManager *m_manager = nullptr;
     trust::TrustStore &m_trust;
@@ -106,6 +115,7 @@ private:
     std::unique_ptr<QIODevice> m_device;
     Result m_result; // 失败原因在中途就记下，收尾时统一报出去
     bool m_peerContacted = false;
+    bool m_peerReachable = false; // connected() 每次传输只发一次
     bool m_cancelled = false;
     bool m_reported = false;
 };

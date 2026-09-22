@@ -281,6 +281,36 @@ private slots:
         QVERIFY(result.error.contains(QStringLiteral("504")));
     }
 
+    // 握手完成要在 prepare 之前报出去，而且不能等对方的用户点审批。
+    // 逐个地址的时限只有 3 秒，挂在 prepared 上的话，一次需要人工审批的正常传输
+    // 会被误判成「地址不可用」——目录里就一个地址时直接失败。
+    void reportsConnectedBeforeTheApprovalIsAnswered()
+    {
+        m_settings->setOpenMode(false); // 回到「一律提示」：审批要等人
+        m_service->setApprovalWindow(std::chrono::milliseconds(10000));
+        pairReceiver();
+
+        auto source = localSource(QStringLiteral("gated.bin"), QByteArray(1024, 'g'));
+
+        SendClient client(*m_trust);
+        QSignalSpy connected(&client, &SendClient::connected);
+        QSignalSpy prepared(&client, &SendClient::prepared);
+        QSignalSpy approval(m_service, &ReceiveService::approvalRequired);
+        QSignalSpy finished(&client, &SendClient::finished);
+
+        client.start(url(), m_sender, QStringLiteral("发送方"), {source});
+
+        // 审批还挂着的时候，握手信号就该到了。
+        QVERIFY(QTest::qWaitFor([&] { return approval.count() == 1; }, 15000));
+        QCOMPARE(connected.count(), 1);
+        QCOMPARE(prepared.count(), 0); // prepare 还没返回
+
+        m_service->submitApproval(true);
+        QVERIFY(QTest::qWaitFor([&] { return finished.count() == 1; }, 15000));
+        const auto result = finished.first().at(0).value<SendClient::Result>();
+        QVERIFY2(result.ok, qPrintable(result.error));
+    }
+
     void cancelEndsTheSessionOnBothSides()
     {
         pairReceiver();

@@ -53,7 +53,21 @@ QNetworkRequest SendClient::makeRequest(const QUrl &url) const
 void SendClient::wireReply(QNetworkReply *reply)
 {
     connect(reply, &QNetworkReply::sslErrors, this,
-            [this, reply](const QList<QSslError> &errors) { m_pin.handleSslErrors(reply, errors); });
+            [this, reply](const QList<QSslError> &errors) {
+                m_pin.handleSslErrors(reply, errors);
+                // 握手就在这里完成：能走到这一步（自签证书的信任类错误被放行）说明
+                // 连接已经建立，调用方可以撤销那个「建立连接」的时限了。
+                if (m_pin.accepted())
+                    notePeerReached();
+            });
+}
+
+void SendClient::notePeerReached()
+{
+    if (m_peerReachable)
+        return;
+    m_peerReachable = true;
+    emit connected();
 }
 
 void SendClient::start(const QUrl &url, const Identity &identity, const QString &deviceName,
@@ -74,6 +88,7 @@ void SendClient::start(const QUrl &url, const Identity &identity, const QString 
     m_cancelled = false;
     m_reported = false;
     m_peerContacted = false;
+    m_peerReachable = false;
     m_device.reset();
     m_step = Step::Preparing;
     m_result = {};
@@ -257,6 +272,7 @@ void SendClient::onReplyFinished(QNetworkReply *reply, Step step)
         fail(m_pin.error());
         return;
     }
+    notePeerReached(); // 握手没触发 sslErrors 的那条路（对端证书本就受信）
 
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray body = reply->readAll();

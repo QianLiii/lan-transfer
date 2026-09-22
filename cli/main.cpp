@@ -606,9 +606,15 @@ int runSend(const Options &options)
         }
     });
 
-    QObject::connect(&client, &SendClient::prepared, [&](const QString &sessionId) {
+    // 逐个地址的时限只管**建立连接**。prepare 的 200 要等对方的用户点审批
+    // （最长 kApprovalWindow），把它算进那个 3 秒时限里，一次正常的人工审批传输
+    // 就会被当成地址不可用——所以撤时限挂在握手信号上，不是挂在 prepared 上。
+    QObject::connect(&client, &SendClient::connected, [&] {
         if (connector.has_value())
-            connector->connected(); // 握手过了，撤掉这个地址的时限
+            connector->connected();
+    });
+
+    QObject::connect(&client, &SendClient::prepared, [&](const QString &sessionId) {
         writeStdout(QStringLiteral("会话 %1，开始传输 %2 个文件")
                         .arg(sessionId.left(8))
                         .arg(sources.size()));
