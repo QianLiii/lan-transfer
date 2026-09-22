@@ -129,6 +129,13 @@ void AvahiDiscovery::start()
 
 void AvahiDiscovery::registerService()
 {
+    // 通告一个端口 0 等于通告「我不知道自己在哪个端口」，对端拿到也没用。
+    // 广播后端一直有这条检查，另外两个后端没有——同一个决定不该有三种行为。
+    if (m_config.announce && m_config.self.port == 0) {
+        fail(QStringLiteral("监听端口为 0，没有可通告的内容"));
+        return;
+    }
+
     const QDBusMessage groupReply =
         bus().call(QDBusMessage::createMethodCall(kServiceName, kServerPath, kServerInterface,
                                                   QStringLiteral("EntryGroupNew")),

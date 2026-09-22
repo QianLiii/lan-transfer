@@ -138,6 +138,15 @@ private slots:
         }
     }
 
+    // 通告端口 0 没有意义：与广播后端一样，启动时就报错。
+    void refusesToStartWithoutPort()
+    {
+        AvahiDiscovery announcing(configFor(
+            advertisementOf(kFingerprint1, QStringLiteral("没有端口"), 0), true));
+        announcing.start();
+        QVERIFY(!announcing.lastError().isEmpty());
+    }
+
     // 只浏览不通告：没有端口也要能启动（发送方没有在监听）。
     void browseOnlyNeedsNoPort()
     {

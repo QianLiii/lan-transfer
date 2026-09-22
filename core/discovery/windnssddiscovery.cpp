@@ -145,6 +145,12 @@ void WinDnsSdDiscovery::start()
 
 void WinDnsSdDiscovery::registerService()
 {
+    // 与 Avahi、广播两个后端同一条检查：通告端口 0 没有意义。
+    if (m_config.announce && m_config.self.port == 0) {
+        fail(QStringLiteral("port 0: nothing to advertise"));
+        return;
+    }
+
     // 主机名只有注册才需要，所以在本函数里取——放在 start() 里会让这里看不见它。
     //
     // 用 QSysInfo::machineHostName() 而不是 QHostInfo::localHostName()：后者可能去
