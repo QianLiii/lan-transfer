@@ -27,9 +27,44 @@ PromptLimiter::PromptLimiter(int maxPrompts, std::chrono::seconds window)
 {
 }
 
+namespace {
+
+// 每隔这么多次调用扫一遍整张表，或表大到一定程度就扫。
+//
+// 扫是必要的：只清时间戳不删键的话，键会随「见过的设备数」单调增长，而 deviceId 是
+// 自签证书现算的——每个连接换一把密钥就是一个新键。扫描本身是 O(设备数)，所以不能
+// 每次调用都扫（那会变成 O(n²)），这两个阈值把它的摊还成本压到常数级。
+constexpr int kSweepEveryNthCall = 64;
+constexpr int kSweepWhenLargerThan = 512;
+
+} // namespace
+
+void PromptLimiter::sweep(const QDateTime &now)
+{
+    m_callsSinceSweep = 0;
+    const qint64 windowMs = std::chrono::milliseconds(m_window).count();
+
+    for (auto it = m_history.begin(); it != m_history.end();) {
+        QList<QDateTime> &history = it.value();
+        while (!history.isEmpty() && history.first().msecsTo(now) > windowMs)
+            history.removeFirst();
+
+        if (history.isEmpty())
+            it = m_history.erase(it);
+        else
+            ++it;
+    }
+}
+
 bool PromptLimiter::allowPrompt(const QString &deviceId, const QDateTime &now)
 {
-    QList<QDateTime> &history = m_history[deviceId];
+    if (++m_callsSinceSweep >= kSweepEveryNthCall || m_history.size() > kSweepWhenLargerThan)
+        sweep(now);
+
+    auto it = m_history.find(deviceId);
+    if (it == m_history.end())
+        it = m_history.insert(deviceId, {});
+    QList<QDateTime> &history = it.value();
 
     // 只留窗口内的那几次。
     while (!history.isEmpty() && history.first().msecsTo(now) > m_window.count() * 1000)

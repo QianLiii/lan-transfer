@@ -51,10 +51,17 @@ public:
 
     void clear() { m_history.clear(); }
 
+    // 表里还留着多少台设备。诊断与测试用。
+    [[nodiscard]] int trackedDevices() const { return static_cast<int>(m_history.size()); }
+
 private:
+    // 把整张表里滑出窗口的条目收掉（连同键）。
+    void sweep(const QDateTime &now);
+
     int m_maxPrompts;
     std::chrono::seconds m_window;
     QHash<QString, QList<QDateTime>> m_history;
+    int m_callsSinceSweep = 0;
 };
 
 } // namespace lanpipe::trust

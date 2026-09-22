@@ -164,6 +164,24 @@ private slots:
         QVERIFY(limiter.allowPrompt(QStringLiteral("a"), now.addSecs(61)));
     }
 
+    // 键不能随「见过的设备数」无限增长：deviceId 是自签证书现算的，每个连接换一把
+    // 密钥就是一个新键。窗口滑过去之后要把它们收掉。
+    void promptLimiterDoesNotAccumulateDevices()
+    {
+        PromptLimiter limiter(3, std::chrono::seconds(60));
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+
+        for (int i = 0; i < 1000; ++i)
+            QVERIFY(limiter.allowPrompt(QStringLiteral("dev%1").arg(i), now));
+
+        // 窗口内这些设备都还得留着——那是限流本身要记的东西，不是泄漏。
+        QVERIFY(limiter.trackedDevices() > 500);
+
+        // 窗口滑过去之后再问一台：顺带把陈旧的整批收掉。
+        QVERIFY(limiter.allowPrompt(QStringLiteral("later"), now.addSecs(120)));
+        QCOMPARE(limiter.trackedDevices(), 1);
+    }
+
     void promptLimiterWindowSlides()
     {
         PromptLimiter limiter(2, std::chrono::seconds(60));
