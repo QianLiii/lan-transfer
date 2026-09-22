@@ -71,20 +71,6 @@ enum ExitCode {
     kExitInterrupted = 130   // 被 SIGINT 打断（128 + 2，与 shell 惯例一致）
 };
 
-#ifndef Q_OS_WIN
-
-// SIGINT 的自来水管：信号处理器里只能做异步信号安全的事，所以里面只 write()，
-// 真正的处理留给事件循环里的 QSocketNotifier。
-int g_signalPipe[2] = {-1, -1};
-
-extern "C" void onInterrupt(int)
-{
-    const char byte = 1;
-    [[maybe_unused]] const ssize_t ignored = ::write(g_signalPipe[1], &byte, 1);
-}
-
-#endif
-
 struct Options
 {
     QString command;
@@ -114,6 +100,45 @@ void writeStderr(const QString &text)
     QTextStream err(stderr);
     err << text << Qt::endl;
 }
+
+#ifndef Q_OS_WIN
+
+// SIGINT 的自来水管：信号处理器里只能做异步信号安全的事，所以里面只 write()，
+// 真正的处理留给事件循环里的 QSocketNotifier。
+int g_signalPipe[2] = {-1, -1};
+
+extern "C" void onInterrupt(int)
+{
+    const char byte = 1;
+    [[maybe_unused]] const ssize_t ignored = ::write(g_signalPipe[1], &byte, 1);
+}
+
+#else
+
+// Windows 没有 SIGINT 可用（控制台事件由系统在专用线程里派发），但那个线程不是信号
+// 上下文——所以可以安全地做一次跨线程队列投递。少了这条，Ctrl-C 会走默认处理直接
+// 结束进程，在途的传输只能等 24 小时清扫。
+lanpipe::transfer::ReceiveService *g_serveTarget = nullptr;
+
+BOOL WINAPI onConsoleCtrl(DWORD type)
+{
+    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT)
+        return FALSE;
+    auto *target = g_serveTarget;
+    if (target == nullptr)
+        return FALSE;
+
+    QMetaObject::invokeMethod(target, [target] {
+        writeStdout(QStringLiteral("收到中断，取消当前传输"));
+        target->cancelActive();
+    }, Qt::QueuedConnection);
+    // 拆除是队列里的，这里按投递先后排在它后面退出。
+    QMetaObject::invokeMethod(qApp, [] { QCoreApplication::exit(kExitInterrupted); },
+                              Qt::QueuedConnection);
+    return TRUE;
+}
+
+#endif
 
 // 进程级唯一的 stdin 流。
 //
@@ -547,6 +572,9 @@ int runServe(const Options &options)
         });
         std::signal(SIGINT, onInterrupt);
     }
+#else
+    g_serveTarget = &transfers;
+    SetConsoleCtrlHandler(onConsoleCtrl, TRUE);
 #endif
 
     return QCoreApplication::exec();
