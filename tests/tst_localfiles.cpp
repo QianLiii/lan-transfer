@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include "files/atomicwrite.h"
 #include "files/localsink.h"
 #include "files/localsource.h"
 #include "protocol.h"
@@ -242,6 +243,18 @@ private slots:
         }
         QVERIFY(!sink.commit());
         QVERIFY(sink.finalPath().isEmpty());
+    }
+
+    // 错误出参可以不传：只关心成败的调用方不该因为少给一个指针就崩。
+    void atomicWriteToleratesAMissingErrorOutParam()
+    {
+        const QString path = QDir(m_dir.path()).filePath(QStringLiteral("atomic.bin"));
+        QVERIFY(writeFileAtomically(path, QByteArray("data"), nullptr));
+        QCOMPARE(QFile(path).size(), qint64{4});
+
+        // 写不进去时同样只是返回 false。
+        const QString bad = QStringLiteral("/proc/不存在的目录/x.bin");
+        QVERIFY(!writeFileAtomically(bad, QByteArray("data"), nullptr));
     }
 
     void sinkRefusesASecondOpen()
