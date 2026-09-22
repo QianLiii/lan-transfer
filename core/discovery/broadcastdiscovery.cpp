@@ -9,6 +9,8 @@
 #include <QRandomGenerator>
 #include <QTimer>
 
+#include <cmath>
+
 namespace lanpipe::discovery {
 
 namespace {
@@ -70,9 +72,12 @@ std::expected<Advertisement, QString> decodeAdvertisement(QByteArrayView datagra
     QJsonParseError parseError;
     const QJsonDocument document =
         QJsonDocument::fromJson(QByteArray(datagram).left(kMaxAnnouncementSize), &parseError);
-    if (document.isNull() || !document.isObject())
-        return std::unexpected(
-            QStringLiteral("载荷不是 JSON 对象：%1").arg(parseError.errorString()));
+    // 分开判：JSON 合法但不是对象时，parseError.errorString() 是「no error occurred」
+    // 这种毫无意义的文案（Qt 的解析器在成功时把错误码留在 NoError）。
+    if (document.isNull())
+        return std::unexpected(QStringLiteral("载荷不是合法 JSON：%1").arg(parseError.errorString()));
+    if (!document.isObject())
+        return std::unexpected(QStringLiteral("载荷不是 JSON 对象"));
 
     const QJsonObject object = document.object();
 
@@ -89,6 +94,12 @@ std::expected<Advertisement, QString> decodeAdvertisement(QByteArrayView datagra
     const QJsonValue version = object.value(QStringLiteral("ver"));
     if (!version.isDouble())
         return std::unexpected(QStringLiteral("字段 ver 缺失或不是整数"));
+    // 整数性与范围：port 一直有 1–65535 的检查，version 此前只查了「是数字」。
+    const double versionNumber = version.toDouble();
+    if (!std::isfinite(versionNumber) || std::floor(versionNumber) != versionNumber
+        || versionNumber < 1 || versionNumber > 1000) {
+        return std::unexpected(QStringLiteral("字段 ver 不是有效的协议版本"));
+    }
 
     const QJsonValue port = object.value(QStringLiteral("port"));
     if (!port.isDouble())

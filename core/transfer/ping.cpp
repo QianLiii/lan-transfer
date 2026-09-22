@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -48,9 +49,10 @@ std::expected<PingRequest, QString> pingRequestFromJson(const QByteArray &body)
 {
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    if (document.isNull() || !document.isObject())
-        return std::unexpected(
-            QStringLiteral("请求体不是 JSON 对象：%1").arg(parseError.errorString()));
+    if (document.isNull())
+        return std::unexpected(QStringLiteral("请求体不是合法 JSON：%1").arg(parseError.errorString()));
+    if (!document.isObject())
+        return std::unexpected(QStringLiteral("请求体不是 JSON 对象"));
 
     const QJsonObject object = document.object();
 
@@ -88,9 +90,10 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
 {
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    if (document.isNull() || !document.isObject())
-        return std::unexpected(
-            QStringLiteral("响应体不是 JSON 对象：%1").arg(parseError.errorString()));
+    if (document.isNull())
+        return std::unexpected(QStringLiteral("响应体不是合法 JSON：%1").arg(parseError.errorString()));
+    if (!document.isObject())
+        return std::unexpected(QStringLiteral("响应体不是 JSON 对象"));
 
     const QJsonObject object = document.object();
 
@@ -112,6 +115,12 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
     const QJsonValue version = object.value(QStringLiteral("ver"));
     if (!version.isDouble())
         return std::unexpected(QStringLiteral("字段 ver 缺失或不是整数"));
+    // 整数性与范围：只查 isDouble 的话，1.5 会被 toInt() 截成 1、1e300 变成未定义值。
+    const double versionNumber = version.toDouble();
+    if (!std::isfinite(versionNumber) || std::floor(versionNumber) != versionNumber
+        || versionNumber < 1 || versionNumber > 1000) {
+        return std::unexpected(QStringLiteral("字段 ver 不是有效的协议版本"));
+    }
 
     const QJsonValue reachable = object.value(QStringLiteral("reachable"));
     if (!reachable.isBool())

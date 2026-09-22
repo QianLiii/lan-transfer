@@ -74,10 +74,10 @@ std::expected<QJsonObject, QString> parseObject(const QByteArray &body, const QS
 {
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    if (document.isNull() || !document.isObject()) {
-        return std::unexpected(
-            QStringLiteral("%1不是 JSON 对象：%2").arg(what, parseError.errorString()));
-    }
+    if (document.isNull())
+        return std::unexpected(QStringLiteral("%1不是合法 JSON：%2").arg(what, parseError.errorString()));
+    if (!document.isObject())
+        return std::unexpected(QStringLiteral("%1不是 JSON 对象").arg(what));
     return document.object();
 }
 

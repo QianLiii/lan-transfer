@@ -120,6 +120,25 @@ private slots:
         }
     }
 
+    // ver 的整数性与范围（原先只查「是数字」）：1.5 会被 toInt() 截成 1，
+    // 1e300 更是无意义——port 一直有范围检查，version 不该例外。
+    void codecRejectsImplausibleVersions()
+    {
+        const QList<QByteArray> bad{
+            QByteArray(R"({"name":"x",)"
+                       R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
+                       R"("ver":1.5,"port":4443})"),
+            QByteArray(R"({"name":"x",)"
+                       R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
+                       R"("ver":0,"port":4443})"),
+            QByteArray(R"({"name":"x",)"
+                       R"("fp":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",)"
+                       R"("ver":1e300,"port":4443})"),
+        };
+        for (const QByteArray &payload : bad)
+            QVERIFY2(!decodeAdvertisement(payload).has_value(), qPrintable(payload));
+    }
+
     // §3.2 的 255 字节上限：超长名字按 UTF-8 边界截断，不截出半个字符。
     void longNameIsTruncatedOnUtf8Boundary()
     {
