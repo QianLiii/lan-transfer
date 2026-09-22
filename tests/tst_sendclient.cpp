@@ -281,6 +281,31 @@ private slots:
         QVERIFY(result.error.contains(QStringLiteral("504")));
     }
 
+    // peerContacted 的语义是「这台地址给过回应」。没连上不算——CLI 靠它决定
+    // 「换下一个地址」还是「直接放弃」，把连不上也算成联系过，逐个地址的回退就
+    // 永远不触发。
+    void contactFlagMeansAnAnswerCameBack()
+    {
+        pairReceiver();
+
+        // 没有人监听的端口：连接被拒，连不上。
+        SendClient dead(*m_trust);
+        QSignalSpy finished(&dead, &SendClient::finished);
+        dead.start(QUrl(QStringLiteral("https://127.0.0.1:9")), m_sender,
+                   QStringLiteral("发送方"),
+                   {localSource(QStringLiteral("x.bin"), QByteArray("x"))});
+        QVERIFY(QTest::qWaitFor([&] { return finished.count() == 1; }, 15000));
+        QVERIFY(!dead.peerContacted());
+
+        // 真对端：哪怕准备阶段被拒（这里是没超时、正常走完），也算有过回话。
+        SendClient alive(*m_trust);
+        QSignalSpy done(&alive, &SendClient::finished);
+        alive.start(url(), m_sender, QStringLiteral("发送方"),
+                    {localSource(QStringLiteral("y.bin"), QByteArray("y"))});
+        QVERIFY(QTest::qWaitFor([&] { return done.count() == 1; }, 15000));
+        QVERIFY(alive.peerContacted());
+    }
+
     // 握手完成要在 prepare 之前报出去，而且不能等对方的用户点审批。
     // 逐个地址的时限只有 3 秒，挂在 prepared 上的话，一次需要人工审批的正常传输
     // 会被误判成「地址不可用」——目录里就一个地址时直接失败。

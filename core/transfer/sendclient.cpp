@@ -250,7 +250,6 @@ void SendClient::onReplyFinished(QNetworkReply *reply, Step step)
     reply->deleteLater();
     if (m_reply == reply)
         m_reply = nullptr;
-    m_peerContacted = true;
 
     // 设备**不在这里**销毁：取消路径上 abort() 之后 QNAM 仍可能再读一次，删早了
     // 就是踩空（实测崩在 QNonContiguousByteDeviceIoDeviceImpl::advanceReadPointerEx）。
@@ -276,6 +275,12 @@ void SendClient::onReplyFinished(QNetworkReply *reply, Step step)
 
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QByteArray body = reply->readAll();
+
+    // 「有过一次回话」只在真收到 HTTP 应答时成立。连接被拒、握手失败、超时都走
+    // finished，但它们没有应答——把它们也算成「联系过」，逐个地址的回退就永远
+    // 不会触发（回退链等于没有）。
+    if (status > 0)
+        m_peerContacted = true;
     if (status != 200) {
         fail(status > 0 ? QStringLiteral("对端返回 %1：%2").arg(status).arg(reasonFrom(body))
                         : QStringLiteral("请求失败：%1").arg(reply->errorString()));
