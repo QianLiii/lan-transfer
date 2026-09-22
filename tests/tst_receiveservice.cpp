@@ -493,6 +493,44 @@ private slots:
         QCOMPARE(approval.count(), 0);
     }
 
+    // 两条连接同时 PUT 不同文件：第二条要被挡掉。上传状态是单份的（一个 sink、
+    // 一个设备、一个连接指针），放进来就会互相踩——字节写进错误的临时文件。
+    void concurrentUploadsAreRefused()
+    {
+        const QString sessionId =
+            acceptSession({fileEntry(kFileId, QStringLiteral("a.bin"), 8),
+                           fileEntry(kOtherFileId, QStringLiteral("b.bin"), 8)},
+                          16);
+        QSignalSpy progress(m_service, &ReceiveService::fileProgress);
+
+        // 第一条：发头 + 一半的体，挂着不收尾。
+        RawClient first(rawclient::withCertificate(m_sender), this);
+        first.connectTo(m_port);
+        first.send("PUT " + uploadTarget(sessionId, kFileId)
+                   + " HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n");
+        first.send(QByteArray("1234"));
+        QVERIFY(waitFor([&] { return progress.count() > 0; }));
+
+        // 第二条：另一个文件，必须被挡。
+        QByteArray body;
+        QCOMPARE(exchange(putRequest(uploadTarget(sessionId, kOtherFileId), QByteArray("abcdefgh")),
+                          &body),
+                 409);
+        QVERIFY(body.contains("正在传输"));
+
+        // 第一条照常收尾，文件 2 之后仍然能传。
+        first.send(QByteArray("5678"));
+        QVERIFY(waitFor([&] { return first.finished(); }));
+        QCOMPARE(first.statusCode(), 200);
+
+        QCOMPARE(exchange(putRequest(uploadTarget(sessionId, kOtherFileId), QByteArray("abcdefgh")),
+                          &body),
+                 200);
+        QFile a(QDir(receiveDir()).filePath(QStringLiteral("a.bin")));
+        QVERIFY(a.open(QIODevice::ReadOnly));
+        QCOMPARE(a.readAll(), QByteArray("12345678"));
+    }
+
     // —————————————— 黑名单与限流（§4）——————————————
 
     // 被屏蔽的设备连框都不弹——否则局域网里任何一台设备都能无限打扰用户。

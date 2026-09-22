@@ -468,6 +468,14 @@ void ReceiveService::handleUpload(http::HttpConnection &connection)
     if (!session)
         return;
 
+    // 一次只允许一条 PUT 在途。不挡的话第二条连接会覆盖 m_upload / m_uploadSink /
+    // m_uploadDevice，第一条的字节就写进了第二条的临时文件（自家发送方是串行的，
+    // 但任何拿到 sessionId 的对端都能同时开两条连接）。
+    if (m_upload) {
+        respondError(connection, Status::Conflict, QStringLiteral("另一个文件正在传输中"));
+        return;
+    }
+
     ReceiveSession::Entry *entry = session->find(fileId);
     if (!entry) {
         respondError(connection, Status::Conflict, QStringLiteral("这个文件不在本次声明的清单里"));
