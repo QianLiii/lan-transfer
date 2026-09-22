@@ -212,6 +212,20 @@ private slots:
 
         QVERIFY(!Fingerprint::fromHex(QStringLiteral("abcd")).has_value());
         QVERIFY(!Fingerprint::fromHex(QString()).has_value());
+
+        // 大小写都合法，解析结果相同。
+        const QString hex = identity->fingerprint().toHex();
+        const auto upper = Fingerprint::fromHex(hex.toUpper());
+        if (!upper.has_value())
+            QFAIL("大写十六进制应当被接受");
+        QCOMPARE(upper->bytes(), identity->fingerprint().bytes());
+
+        // 严格性：QByteArray::fromHex 会跳过非法字符，所以「长度对但掺了杂字符」与
+        // 「长度多一个」都必须在这里挡住——否则 --pin 会钉住用户看到的那串之外的东西。
+        QVERIFY(!Fingerprint::fromHex(hex + QStringLiteral("zz")).has_value());
+        QVERIFY(!Fingerprint::fromHex(QStringLiteral("z") + hex.left(63)).has_value());
+        QVERIFY(!Fingerprint::fromHex(hex + QStringLiteral("a")).has_value());
+        QVERIFY(!Fingerprint::fromHex(hex.left(63)).has_value());
     }
 
     void invalidFingerprintHasNoDeviceId()

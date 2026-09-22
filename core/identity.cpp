@@ -191,6 +191,15 @@ Fingerprint Fingerprint::fromCertificate(const QSslCertificate &certificate)
 
 std::optional<Fingerprint> Fingerprint::fromHex(const QString &hex)
 {
+    // 先卡长度与字符集：QByteArray::fromHex 会**跳过**非法字符，于是「64 个合法 hex
+    // 掺几个杂字符」也会被解析成 32 字节。--pin 就会接受用户看到的那串之外的东西。
+    if (hex.size() != 64)
+        return std::nullopt;
+    for (const QChar c : hex) {
+        if (!((c >= u'0' && c <= u'9') || (c >= u'a' && c <= u'f') || (c >= u'A' && c <= u'F')))
+            return std::nullopt;
+    }
+
     const QByteArray raw = QByteArray::fromHex(hex.toLatin1());
     if (raw.size() != 32)
         return std::nullopt;
@@ -219,10 +228,7 @@ QString deviceIdFrom(const Fingerprint &fingerprint)
 
 QString deviceIdFromHex(const QString &hex)
 {
-    // 先卡长度：QByteArray::fromHex 会跳过非法字符，只靠它自己的长度检查
-    // 会放过「64 个合法字符掺了两个杂字符」这类输入。
-    if (hex.size() != 64)
-        return {};
+    // 长度与字符集的检查都在 Fingerprint::fromHex 里。
     const auto fingerprint = Fingerprint::fromHex(hex);
     if (!fingerprint.has_value())
         return {};
