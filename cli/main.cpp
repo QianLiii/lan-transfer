@@ -115,6 +115,29 @@ void writeStderr(const QString &text)
     err << text << Qt::endl;
 }
 
+// 进程级唯一的 stdin 流。
+//
+// 每次新建 QTextStream(stdin) 都会把最多 16 KB 预读进它自己的缓冲，而析构时连缓冲
+// 一起丢掉——管道里预先写好的第二行就这么消失：`printf '123456\ny\n' | lanpipe serve`
+// 的审批行会被配对那一步吃掉。
+QTextStream &stdinStream()
+{
+    static QTextStream stream(stdin);
+    return stream;
+}
+
+// 读一行并去掉首尾空白（允许「123 456」这种输入）。返回 false 表示标准输入已结束：
+// 「没有输入」必须与「输入错了」分开，否则 EOF 会被报成「配对码不一致……另一端不是
+// 你以为的那台设备」这种误导性结论。
+bool readStdinLine(QString *out)
+{
+    const QString line = stdinStream().readLine();
+    if (line.isNull())
+        return false; // QTextStream 在流结束时返回 null QString
+    *out = line.trimmed();
+    return true;
+}
+
 QString usageText()
 {
     return QStringLiteral(
@@ -343,8 +366,13 @@ int runServe(const Options &options)
             // 也意味着 kSasInputWindow 的计时器在 CLI 下不会响（事件循环没在转）。
             // 对端放弃时会通过连接的 finished 把这次配对作废，所以不会留下
             // 「对方早已走了、我们却记下配对」的记录。GUI 版（M5）用异步输入。
-            QTextStream in(stdin);
-            ping.submitInput(in.readLine());
+            QString typed;
+            if (!readStdinLine(&typed)) {
+                writeStderr(QStringLiteral("标准输入已结束，本次配对作废"));
+                QCoreApplication::exit(kExitFailure);
+                return;
+            }
+            ping.submitInput(typed);
         });
 
     QObject::connect(&ping, &transfer::PingService::pairingFinished,
@@ -397,8 +425,12 @@ int runServe(const Options &options)
 
             // 与配对同理：这一刻整个服务停在这里，所以审批窗口的计时器在 CLI 下
             // 不会响（事件循环没在转）。GUI 版（M5）用异步输入才真正生效。
-            QTextStream in(stdin);
-            const QString answer = in.readLine().trimmed();
+            QString answer;
+            if (!readStdinLine(&answer)) {
+                writeStdout(QStringLiteral("标准输入已结束，按拒绝处理"));
+                transfers.submitApproval(false);
+                return;
+            }
             if (answer.startsWith(QLatin1Char('b'), Qt::CaseInsensitive))
                 transfers.submitBlock();
             else
@@ -971,8 +1003,12 @@ int runPair(const Options &options)
                          // 只为计时不值当。晚到的答案一律拒绝。
                          QElapsedTimer timer;
                          timer.start();
-                         QTextStream in(stdin);
-                         const QString input = in.readLine();
+                         QString input;
+                         if (!readStdinLine(&input)) {
+                             writeStderr(QStringLiteral("标准输入已结束，本次配对作废"));
+                             QCoreApplication::exit(kExitFailure);
+                             return;
+                         }
                          const bool late = std::chrono::milliseconds(timer.elapsed())
                              > proto::kSasInputWindow;
 
