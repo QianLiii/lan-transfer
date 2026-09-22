@@ -264,17 +264,23 @@ bool TrustStore::add(Entry entry, QString *error)
         return false;
     }
 
-    const auto previous = m_entries.constFind(entry.deviceId);
-    m_entries.insert(entry.deviceId, std::move(entry));
+    const QString deviceId = entry.deviceId;
+    const auto previous = m_entries.constFind(deviceId);
+    const bool hadPrevious = previous != m_entries.constEnd();
+    // **先把旧值拷出来**再 insert：insert 可能触发 rehash，那之后 previous 就失效了
+    // （Qt 只承诺 insert 会让迭代器失效，没承诺「同键不会 rehash」）。block() 一直是
+    // 这么写的，这里是同一处的对称做法。
+    const Entry kept = hadPrevious ? *previous : Entry{};
+    m_entries.insert(deviceId, std::move(entry));
 
     if (save(error))
         return true;
 
     // 落盘失败就回滚内存，否则内存与磁盘不一致，而调用方以为已经配对成功。
-    if (previous == m_entries.constEnd())
-        m_entries.remove(entry.deviceId);
+    if (hadPrevious)
+        m_entries.insert(deviceId, kept);
     else
-        m_entries.insert(previous->deviceId, *previous);
+        m_entries.remove(deviceId);
     return false;
 }
 
