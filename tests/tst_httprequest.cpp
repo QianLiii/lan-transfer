@@ -241,6 +241,15 @@ private slots:
                  HeadParseResult::Invalid);
     }
 
+    // 重复的 Expect：只认第一个值等于放任其余值被对端按另一套规矩解释，而「同一请求
+    // 两种解释」正是走私的入口。Content-Length 一直是这么查的。
+    void rejectsDuplicateExpect()
+    {
+        const auto outcome = parseRequestHead(
+            "POST / HTTP/1.1\r\nExpect: 100-continue\r\nExpect: 100-continue\r\n\r\n");
+        QCOMPARE(outcome.result, HeadParseResult::Invalid);
+    }
+
     void rejectsNonContinueExpect()
     {
         QCOMPARE(parseRequestHead(build("PUT /x HTTP/1.1", {"Expect: something-else"})).result,

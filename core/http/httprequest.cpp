@@ -227,9 +227,15 @@ HeadParseOutcome parseRequestHead(const QByteArray &buffer)
         head.contentLength = value;
     }
 
-    const QByteArray expect = head.header("Expect");
-    if (!expect.isEmpty()) {
-        if (expect.compare("100-continue", Qt::CaseInsensitive) != 0)
+    // 重复的头一律拒：header() 只返回第一个值，而其它值同样会被对端和中间设备按各自
+    // 的规矩解释——「只认第一个」正是请求走私的经典入口。Content-Length 一直这么查，
+    // Expect 是我们另外唯一会解释的头。
+    const QList<QByteArray> expects = head.headerValues("Expect");
+    if (expects.size() > 1)
+        return invalid(QStringLiteral("重复的 Expect"));
+
+    if (!expects.isEmpty()) {
+        if (expects.first().compare("100-continue", Qt::CaseInsensitive) != 0)
             return invalid(QStringLiteral("只支持 Expect: 100-continue"));
         head.expectContinue = true;
     }
