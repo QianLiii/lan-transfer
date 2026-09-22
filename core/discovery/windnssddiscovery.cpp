@@ -334,21 +334,24 @@ VOID WINAPI WinDnsSdDiscovery::onResolveComplete(DWORD status, PVOID queryContex
     // 对象析构后回调不会被调用，所以这里可以直接调私有方法。
     const bool needsHostLookup = addresses.isEmpty() && !hostName.isEmpty();
 
+    // 这个函子是在 postToOwner 的锁里跑的，所以它只做一件事：把工作投递到 owner
+    // 线程。**任何 Qt 调用都必须在投递出去的那一段里**——QHostInfo::lookupHost 也不
+    // 例外（它内部要建对象、要进事件循环），在这里调就等于持锁跑 Qt。
     postToOwner(queryContext, [&](WinDnsSdDiscovery *owner) {
-        if (needsHostLookup) {
-            QHostInfo::lookupHost(hostName, owner,
-                                  [owner, name, port, txt](const QHostInfo &info) {
-                                      QStringList resolved;
-                                      const QList<QHostAddress> found = info.addresses();
-                                      for (const QHostAddress &address : found)
-                                          resolved.append(address.toString());
-                                      owner->adoptResolved(name, resolved, port, txt);
-                                  });
-            return;
-        }
         QMetaObject::invokeMethod(
             owner,
-            [owner, name, addresses, port, txt] {
+            [owner, needsHostLookup, hostName, name, addresses, port, txt] {
+                if (needsHostLookup) {
+                    QHostInfo::lookupHost(hostName, owner,
+                                          [owner, name, port, txt](const QHostInfo &info) {
+                                              QStringList resolved;
+                                              const QList<QHostAddress> found = info.addresses();
+                                              for (const QHostAddress &address : found)
+                                                  resolved.append(address.toString());
+                                              owner->adoptResolved(name, resolved, port, txt);
+                                          });
+                    return;
+                }
                 owner->adoptResolved(name, addresses, port, txt);
             },
             Qt::QueuedConnection);
