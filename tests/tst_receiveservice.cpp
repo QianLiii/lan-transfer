@@ -692,6 +692,20 @@ private slots:
                  410);
     }
 
+    // fileId 的大小写：prepare 那条路接受大写（十六进制字段），路径解析就必须也接受，
+    // 否则声明了大写 id 的文件永远传不上（PUT 恒 400）。两边都归一化成小写再比。
+    void uppercaseFileIdStillUploads()
+    {
+        const QString upperId = kFileId.toUpper();
+        const QString sessionId =
+            acceptSession({fileEntry(upperId, QStringLiteral("upper.bin"), 3)}, 3);
+
+        QByteArray body;
+        QCOMPARE(exchange(putRequest(uploadTarget(sessionId, upperId), QByteArray("abc")), &body),
+                 200);
+        QVERIFY(QFile::exists(QDir(receiveDir()).filePath(QStringLiteral("upper.bin"))));
+    }
+
     void undeclaredFileIs409()
     {
         const QString sessionId = acceptSingleFile(3);

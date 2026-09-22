@@ -23,13 +23,15 @@ const QByteArrayView completePrefix(proto::kPathCompletePrefix.data(),
                                     proto::kPathCompletePrefix.size());
 const QByteArrayView abortPrefix(proto::kPathAbortPrefix.data(), proto::kPathAbortPrefix.size());
 
-// 路径里的 id 只认 randomHex() 产出的形态：小写十六进制、长度正好。
+// 路径里的 id：长度正好、全是十六进制。大小写都收，但**归一化成小写**再往下走——
+// 我们只产出小写，而大写形态是 prepare 那条路也能接受的（见 transfer.cpp），
+// 两边不一致就会让那个文件的 PUT 永远 400。
 bool isId(QByteArrayView text, int bytes)
 {
     if (text.size() != bytes * 2)
         return false;
     for (const char c : text) {
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
             return false;
     }
     return true;
@@ -48,8 +50,8 @@ std::optional<QPair<QString, QString>> parseUploadTarget(QByteArrayView target)
     if (!isId(sessionId, proto::kSessionIdBytes) || !isId(fileId, proto::kFileIdBytes))
         return std::nullopt;
 
-    return QPair<QString, QString>{QString::fromLatin1(sessionId.toByteArray()),
-                                   QString::fromLatin1(fileId.toByteArray())};
+    return QPair<QString, QString>{QString::fromLatin1(sessionId.toByteArray()).toLower(),
+                                   QString::fromLatin1(fileId.toByteArray()).toLower()};
 }
 
 // /api/v1/complete/<sessionId> 与 /api/v1/abort/<sessionId>：正好一段。
@@ -58,7 +60,7 @@ std::optional<QString> parseSessionTarget(QByteArrayView target, QByteArrayView 
     const QByteArrayView rest = target.sliced(prefix.size());
     if (!isId(rest, proto::kSessionIdBytes))
         return std::nullopt;
-    return QString::fromLatin1(rest.toByteArray());
+    return QString::fromLatin1(rest.toByteArray()).toLower();
 }
 
 // 问不出可用空间时返回 0。未知不等于不足——这是给用户的提示，不是安全门，

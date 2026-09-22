@@ -147,7 +147,9 @@ std::expected<TransferRequest, QString> transferRequestFromJson(const QByteArray
         const auto id = hexField(entry, "id", proto::kFileIdBytes * 2);
         if (!id.has_value())
             return std::unexpected(id.error());
-        file.id = *id;
+        // 统一成小写：下面按 id 建的档、以及 PUT 路径里的 id 都用小写形态，
+        // 不归一化的话一个声明了大写 fileId 的对端永远传不上那个文件。
+        file.id = id->toLower();
         if (seenIds.contains(file.id))
             return std::unexpected(QStringLiteral("fileId %1 重复").arg(file.id));
         seenIds.insert(file.id);
