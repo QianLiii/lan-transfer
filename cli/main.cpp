@@ -221,6 +221,20 @@ void printVersion()
     writeStdout(QStringLiteral("TLS 后端 %1").arg(lanpipe::activeBackendName()));
 }
 
+// 连接目标的 URL。
+//
+// 用 setHost 而不是字符串拼接：IPv6 地址必须带方括号，而 QHostAddress::toString()
+// 不加——拼出来是 https://fe80::1:4490，QUrl 解析不出 host，报错还指向 TLS。
+// 实测：setHost 会补上方括号，带 %zone 的链路本地地址也会正确转义。
+QUrl peerUrl(const QString &host, quint16 port)
+{
+    QUrl url;
+    url.setScheme(QStringLiteral("https"));
+    url.setHost(host);
+    url.setPort(port);
+    return url;
+}
+
 // 加载本机身份。失败时打印原因并返回空值。
 std::optional<lanpipe::Identity> loadIdentity()
 {
@@ -614,10 +628,8 @@ int runSend(const Options &options)
             return;
         }
         writeStdout(QStringLiteral("连接 %1:%2").arg(next->address.toString()).arg(next->port));
-        client.start(QUrl(QStringLiteral("https://%1:%2")
-                              .arg(next->address.toString())
-                              .arg(next->port)),
-                     *identity, settings.deviceName(), sources, expected);
+        client.start(peerUrl(next->address.toString(), next->port), *identity,
+                     settings.deviceName(), sources, expected);
     };
 
     const auto connectToPeer = [&](const discovery::PeerDirectory::Peer &peer) {
@@ -696,8 +708,8 @@ int runSend(const Options &options)
 
     if (!target->byDeviceId) {
         writeStdout(QStringLiteral("连接 %1:%2").arg(target->host).arg(target->port));
-        client.start(QUrl(QStringLiteral("https://%1:%2").arg(target->host).arg(target->port)),
-                     *identity, settings.deviceName(), sources, expected);
+        client.start(peerUrl(target->host, target->port), *identity, settings.deviceName(),
+                     sources, expected);
         return QCoreApplication::exec();
     }
 
@@ -926,10 +938,8 @@ int runPair(const Options &options)
             return;
         }
         writeStdout(QStringLiteral("尝试 %1:%2").arg(next->address.toString()).arg(next->port));
-        client.start(QUrl(QStringLiteral("https://%1:%2")
-                              .arg(next->address.toString())
-                              .arg(next->port)),
-                     *identity, settings.deviceName(), expected);
+        client.start(peerUrl(next->address.toString(), next->port), *identity,
+                     settings.deviceName(), expected);
     };
 
     const auto connectToPeer = [&](const discovery::PeerDirectory::Peer &peer) {
@@ -1051,8 +1061,8 @@ int runPair(const Options &options)
 
     if (!target->byDeviceId) {
         writeStdout(QStringLiteral("正在连接 %1:%2").arg(target->host).arg(target->port));
-        client.start(QUrl(QStringLiteral("https://%1:%2").arg(target->host).arg(target->port)),
-                     *identity, settings.deviceName(), expected);
+        client.start(peerUrl(target->host, target->port), *identity, settings.deviceName(),
+                     expected);
         return QCoreApplication::exec();
     }
 
