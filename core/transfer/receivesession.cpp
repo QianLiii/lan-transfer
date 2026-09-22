@@ -104,7 +104,8 @@ void removeTreeSafely(const QString &path)
     QDir().rmdir(path);
 }
 
-int sweepTempRoot(const QString &receiveDir, std::chrono::hours retention, const QDateTime &now)
+int sweepTempRoot(const QString &receiveDir, std::chrono::hours retention, const QDateTime &now,
+                  const QString &keepSessionId)
 {
     const QString root =
         QDir(receiveDir).filePath(QString::fromLatin1(proto::kTempDirName));
@@ -116,7 +117,10 @@ int sweepTempRoot(const QString &receiveDir, std::chrono::hours retention, const
     const QFileInfoList entries =
         dir.entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
     for (const QFileInfo &info : entries) {
-        // 这条保留期只服务崩溃留下的孤儿：活着的会话自己清理自己（TTL）。
+        // 活动会话永远是活的：它的目录 mtime 不会随分片增长而更新，只看时间会误判。
+        if (!keepSessionId.isEmpty() && info.fileName() == keepSessionId)
+            continue;
+        // 其余这条保留期只服务崩溃留下的孤儿：活着的会话自己清理自己（TTL）。
         const auto age = std::chrono::milliseconds(info.lastModified().msecsTo(now));
         if (age < retention)
             continue;

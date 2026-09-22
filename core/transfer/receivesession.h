@@ -70,8 +70,13 @@ private:
 };
 
 // 删掉 .lanpipe-tmp 下超过 retention 的条目，返回删了几个（§5.7）。
+//
+// keepSessionId 是当前活动会话：那个目录**不能**删。清扫看的是目录 mtime，而一个在途
+// PUT 只会在开头更新它（写分片不再动目录），所以一次超过 24 小时的上传会被自己人的
+// 清扫连人带数据端掉——而 PUT 在途时 TTL 是停着的，那条路没有任何别的保护。
 int sweepTempRoot(const QString &receiveDir, std::chrono::hours retention,
-                  const QDateTime &now = QDateTime::currentDateTimeUtc());
+                  const QDateTime &now = QDateTime::currentDateTimeUtc(),
+                  const QString &keepSessionId = {});
 
 // 删一棵目录树。符号链接只删链接本身——这是全仓唯一一处按目录名删东西的代码，
 // 跟随链接就等于给出了一条从接收目录往外删的路径。

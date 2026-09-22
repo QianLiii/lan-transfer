@@ -901,6 +901,21 @@ private slots:
         QVERIFY(!QDir(entry).exists());
     }
 
+    // 清扫要跳过活动会话。它看的是目录 mtime，而在途 PUT 只在开头动过那个目录，
+    // 于是「单次上传超过 24 小时」会被自己人的清扫连人带数据端掉。
+    void sweepKeepsTheActiveSession()
+    {
+        const QString sessionId = acceptSingleFile(3, QStringLiteral("long.bin"));
+        QVERIFY(QDir(tempDirFor(sessionId)).exists());
+
+        // 把「现在」推到 25 小时之后：别的条目都过期了，活动会话不能。
+        QCOMPARE(m_service->sweepStaleTempData(
+                     QDateTime::currentDateTimeUtc().addSecs(25 * 3600)),
+                 0);
+        QVERIFY(QDir(tempDirFor(sessionId)).exists());
+        QVERIFY(m_service->hasActiveSession());
+    }
+
     // 删树不跟随符号链接：那是全仓唯一一处按目录名删东西的代码。
     void removingATreeDoesNotFollowSymlinks()
     {

@@ -151,7 +151,8 @@ void ReceiveService::setFreeSpaceProbe(FreeSpaceProbe probe)
 
 int ReceiveService::sweepStaleTempData(const QDateTime &now)
 {
-    return sweepTempRoot(m_receiveDir, proto::kTempRetention, now);
+    // 活动会话要跳过：清扫只看目录 mtime，而在途 PUT 不会让它变新。
+    return sweepTempRoot(m_receiveDir, proto::kTempRetention, now, activeSessionId());
 }
 
 int ReceiveService::ttlRemainingSeconds() const
