@@ -52,8 +52,11 @@ QNetworkRequest SendClient::makeRequest(const QUrl &url) const
 
 void SendClient::wireReply(QNetworkReply *reply)
 {
+    const quint64 generation = m_generation;
     connect(reply, &QNetworkReply::sslErrors, this,
-            [this, reply](const QList<QSslError> &errors) {
+            [this, reply, generation](const QList<QSslError> &errors) {
+                if (generation != m_generation)
+                    return; // 上一轮的连接，别让它改这一轮的指纹状态
                 m_pin.handleSslErrors(reply, errors);
                 // 握手就在这里完成：能走到这一步（自签证书的信任类错误被放行）说明
                 // 连接已经建立，调用方可以撤销那个「建立连接」的时限了。
@@ -74,6 +77,16 @@ void SendClient::start(const QUrl &url, const Identity &identity, const QString 
                        const QList<std::shared_ptr<files::FileSource>> &sources,
                        std::optional<Fingerprint> expected)
 {
+    // 上一轮可能还有 reply 在途（CLI 换地址时会直接再 start）：先中止并作废它的
+    // 代际，否则它的 finished 会带着旧 step 改这一轮的状态——超时重入那条路尤其
+    // 危险，旧 reply 迟到时新一轮可能已经在传了。
+    ++m_generation;
+    if (m_reply) {
+        QNetworkReply *stale = m_reply;
+        m_reply = nullptr;
+        stale->abort();
+    }
+
     m_identity = identity;
     m_pin.reset();
     m_pin.setExpected(std::move(expected));
@@ -144,8 +157,9 @@ void SendClient::sendPrepare()
         QJsonDocument(toJson(request)).toJson(QJsonDocument::Compact));
     m_reply = reply;
     wireReply(reply);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply] { onReplyFinished(reply, Step::Preparing); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation] {
+        onReplyFinished(reply, Step::Preparing, generation);
+    });
 }
 
 void SendClient::sendNextFile()
@@ -196,7 +210,9 @@ void SendClient::sendNextFile()
     // 连接的存活期与那个下标绑在一起，读起来不能确定。
     const qsizetype index = m_index;
     connect(reply, &QNetworkReply::uploadProgress, this,
-            [this, index](qint64 sent, qint64 total) {
+            [this, index, generation = m_generation](qint64 sent, qint64 total) {
+                if (generation != m_generation)
+                    return;
                 // §5.10：这是「交给 socket 的字节数」，比写入磁盘的计数靠前一个
                 // socket 缓冲加一块。收到 200 之前不能显示完成。
                 //
@@ -208,8 +224,9 @@ void SendClient::sendNextFile()
                 item.sent = std::max(item.sent, static_cast<quint64>(sent));
                 emit fileProgress(item.id, item.sent, static_cast<quint64>(total));
             });
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply] { onReplyFinished(reply, Step::Uploading); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation] {
+        onReplyFinished(reply, Step::Uploading, generation);
+    });
 }
 
 void SendClient::sendComplete()
@@ -221,8 +238,9 @@ void SendClient::sendComplete()
     QNetworkReply *reply = m_manager->post(request, QByteArray());
     m_reply = reply;
     wireReply(reply);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply] { onReplyFinished(reply, Step::Completing); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation] {
+        onReplyFinished(reply, Step::Completing, generation);
+    });
 }
 
 void SendClient::sendAbort()
@@ -241,15 +259,18 @@ void SendClient::sendAbort()
     QNetworkReply *reply = m_manager->post(request, QByteArray());
     m_reply = reply;
     wireReply(reply);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply] { onReplyFinished(reply, Step::Aborting); });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation] {
+        onReplyFinished(reply, Step::Aborting, generation);
+    });
 }
 
-void SendClient::onReplyFinished(QNetworkReply *reply, Step step)
+void SendClient::onReplyFinished(QNetworkReply *reply, Step step, quint64 generation)
 {
     reply->deleteLater();
     if (m_reply == reply)
         m_reply = nullptr;
+    if (generation != m_generation)
+        return; // start() 已经开了新一轮，这条是上一轮的残响
 
     // 设备**不在这里**销毁：取消路径上 abort() 之后 QNAM 仍可能再读一次，删早了
     // 就是踩空（实测崩在 QNonContiguousByteDeviceIoDeviceImpl::advanceReadPointerEx）。

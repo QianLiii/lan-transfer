@@ -26,6 +26,15 @@ PingClient::PingClient(trust::TrustStore &trust, QObject *parent)
 void PingClient::start(const QUrl &url, const Identity &identity, const QString &name,
                        std::optional<Fingerprint> expected)
 {
+    // 上一轮可能还有 reply 在途（换地址时会直接再 start）：中止并作废它的代际，
+    // 否则它的 finished 会带着旧结果覆盖这一轮的判定。
+    ++m_generation;
+    if (m_reply) {
+        QNetworkReply *stale = m_reply;
+        m_reply = nullptr;
+        stale->abort();
+    }
+
     m_identity = identity;
     m_pin.reset();
     m_pin.setExpected(std::move(expected));
@@ -45,9 +54,14 @@ void PingClient::start(const QUrl &url, const Identity &identity, const QString 
     QNetworkReply *reply =
         m_manager->post(request, QJsonDocument(toJson(PingRequest{m_cnonce, name}))
                                      .toJson(QJsonDocument::Compact));
+    m_reply = reply;
     connect(reply, &QNetworkReply::sslErrors, this,
-            [this, reply](const QList<QSslError> &errors) { onSslErrors(reply, errors); });
-    connect(reply, &QNetworkReply::finished, this, [this, reply] { onFinished(reply); });
+            [this, reply, generation = m_generation](const QList<QSslError> &errors) {
+                onSslErrors(reply, errors, generation);
+            });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation = m_generation] {
+        onFinished(reply, generation);
+    });
 }
 
 void PingClient::announceOurHalf()
@@ -62,16 +76,23 @@ void PingClient::announceOurHalf()
     emit peerAdopted(m_code);
 }
 
-void PingClient::onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors)
+void PingClient::onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors,
+                             quint64 generation)
 {
+    if (generation != m_generation)
+        return;
     m_pin.handleSslErrors(reply, errors);
     if (m_pin.accepted())
         announceOurHalf();
 }
 
-void PingClient::onFinished(QNetworkReply *reply)
+void PingClient::onFinished(QNetworkReply *reply, quint64 generation)
 {
     reply->deleteLater();
+    if (m_reply == reply)
+        m_reply = nullptr;
+    if (generation != m_generation)
+        return; // start() 已经开了新一轮，这条是上一轮的残响
 
     Result result;
 

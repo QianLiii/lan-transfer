@@ -87,7 +87,9 @@ private:
     void sendComplete();
     void sendAbort();
 
-    void onReplyFinished(QNetworkReply *reply, Step step);
+    // generation 用来丢弃上一轮的 finished：start() 会中止在途的 reply，而中止之后
+    // 那条 reply 仍会把 finished 送到这里——带着旧 step 改新一轮的状态。
+    void onReplyFinished(QNetworkReply *reply, Step step, quint64 generation);
     void wireReply(QNetworkReply *reply); // 指纹判定 + 进度
     [[nodiscard]] QNetworkRequest makeRequest(const QUrl &url) const;
     [[nodiscard]] QUrl urlWithPath(const std::string &path) const;
@@ -111,6 +113,7 @@ private:
     qsizetype m_index = 0;
 
     QNetworkReply *m_reply = nullptr;
+    quint64 m_generation = 0; // 每次 start() 自增；旧轮的信号一律丢弃
     // QNAM 不接管设备：它必须活到 reply 的 finished（头文件已经写明）。
     std::unique_ptr<QIODevice> m_device;
     Result m_result; // 失败原因在中途就记下，收尾时统一报出去

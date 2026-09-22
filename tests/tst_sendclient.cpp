@@ -281,6 +281,29 @@ private slots:
         QVERIFY(result.error.contains(QStringLiteral("504")));
     }
 
+    // 换地址时 CLI 会对同一个 SendClient 再 start()。上一轮的 reply 可能还在途，
+    // 它的 finished 不能影响新一轮——否则旧失败会盖掉新结果，或反过来。
+    void restartingAbandonsThePreviousAttempt()
+    {
+        pairReceiver();
+
+        SendClient client(*m_trust);
+        QSignalSpy finished(&client, &SendClient::finished);
+
+        // 先是没人监听的端口（连不上），紧接着改指真对端。
+        client.start(QUrl(QStringLiteral("https://127.0.0.1:9")), m_sender,
+                     QStringLiteral("发送方"),
+                     {localSource(QStringLiteral("a.bin"), QByteArray("a"))});
+        client.start(url(), m_sender, QStringLiteral("发送方"),
+                     {localSource(QStringLiteral("b.bin"), QByteArray("bb"))});
+
+        QVERIFY(QTest::qWaitFor([&] { return finished.count() == 1; }, 15000));
+        const auto result = finished.first().at(0).value<SendClient::Result>();
+        QVERIFY2(result.ok, qPrintable(result.error));
+        QVERIFY(QFile::exists(QDir(receiveDir()).filePath(QStringLiteral("b.bin"))));
+        QVERIFY(!QFile::exists(QDir(receiveDir()).filePath(QStringLiteral("a.bin"))));
+    }
+
     // peerContacted 的语义是「这台地址给过回应」。没连上不算——CLI 靠它决定
     // 「换下一个地址」还是「直接放弃」，把连不上也算成联系过，逐个地址的回退就
     // 永远不触发。

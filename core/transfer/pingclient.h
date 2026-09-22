@@ -63,8 +63,10 @@ signals:
 private:
     // 对端已经通过判定：算出本端那半并显示出去（在本端用户输入之前）。
     void announceOurHalf();
-    void onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors);
-    void onFinished(QNetworkReply *reply);
+    // generation 用来丢弃上一轮的信号：start() 会中止在途的 reply，而中止之后那条
+    // reply 仍会把 finished 送回来。
+    void onSslErrors(QNetworkReply *reply, const QList<QSslError> &errors, quint64 generation);
+    void onFinished(QNetworkReply *reply, quint64 generation);
     void report(Result result);
 
     QNetworkAccessManager *m_manager = nullptr;
@@ -72,6 +74,8 @@ private:
     Identity m_identity;
     PeerPin m_pin; // 身份判定只有一处，与发送方共用
     QString m_cnonce;
+    QNetworkReply *m_reply = nullptr;
+    quint64 m_generation = 0; // 每次 start() 自增；旧轮的信号一律丢弃
     SasCode m_code;
     bool m_reported = false;
 };
