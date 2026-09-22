@@ -374,6 +374,18 @@ private slots:
         QCOMPARE(roundTripped->reachable, false);
         QCOMPARE(roundTripped->fingerprint.toHex(), info.fingerprint.toHex());
 
+        // 设备名有长度上限（它进信任库、进终端）：两侧都要拦。
+        const QString tooLong(static_cast<qsizetype>(proto::kMaxDisplayNameBytes) + 1,
+                              QLatin1Char('n'));
+        QVERIFY(!pingRequestFromJson(
+                     QJsonDocument(toJson(PingRequest{QString(32, QLatin1Char('a')), tooLong}))
+                         .toJson(QJsonDocument::Compact))
+                     .has_value());
+        PingInfo longName = info;
+        longName.name = tooLong;
+        QVERIFY(!pingInfoFromJson(QJsonDocument(toJson(longName)).toJson(QJsonDocument::Compact))
+                     .has_value());
+
         // 缺字段一律拒绝。deviceId 不是响应里的字段，写进去也不会被认。
         QVERIFY(!pingInfoFromJson(QByteArray(R"({"name":"x","ver":1,"reachable":true})"))
                      .has_value());

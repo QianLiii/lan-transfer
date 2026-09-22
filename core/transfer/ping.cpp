@@ -61,6 +61,12 @@ std::expected<PingRequest, QString> pingRequestFromJson(const QByteArray &body)
     const QJsonValue name = object.value(QStringLiteral("name"));
     if (!name.isString())
         return std::unexpected(QStringLiteral("字段 name 缺失或不是字符串"));
+    // 设备名有长度上限：它会进信任库、进配对提示、进 devices 列表，而这里不拦的话
+    // 唯一约束只是请求体那 4 KB。
+    if (name.toString().toUtf8().size() > static_cast<qsizetype>(proto::kMaxDisplayNameBytes)) {
+        return std::unexpected(
+            QStringLiteral("字段 name 超过 %1 字节").arg(proto::kMaxDisplayNameBytes));
+    }
 
     PingRequest request;
     request.cnonce = *cnonce;
@@ -99,6 +105,9 @@ std::expected<PingInfo, QString> pingInfoFromJson(const QByteArray &body)
     const QJsonValue name = object.value(QStringLiteral("name"));
     if (!name.isString())
         return std::unexpected(QStringLiteral("字段 name 缺失或不是字符串"));
+    // 响应里的名字同样有上限：它是对端可控的字节，我们会拿它写信任库、打终端。
+    if (name.toString().toUtf8().size() > static_cast<qsizetype>(proto::kMaxDisplayNameBytes))
+        return std::unexpected(QStringLiteral("字段 name 超过 %1 字节").arg(proto::kMaxDisplayNameBytes));
 
     const QJsonValue version = object.value(QStringLiteral("ver"));
     if (!version.isDouble())
