@@ -4,6 +4,12 @@ namespace lanpipe::trust {
 
 Decision decide(const Settings &settings, const TrustStore &trust, const net::PeerIdentity &peer)
 {
+    // 无效身份一律拒。连接层本来就保证了「走到这里的连接带着有效身份」，但那是隐式
+    // 契约：指纹无效 → deviceId 是空串 → isBlocked("")/contains("") 都为假 → 开放
+    // 模式下会直接放行。多这一行，契约就从「靠上游记得」变成「这里也拦」。
+    if (!peer.isValid())
+        return Decision::Reject;
+
     // 黑名单优先于一切，包括开放模式：用户明确说过不要这台设备，那个开关不该
     // 把它放回来。
     if (trust.isBlocked(peer.deviceId))

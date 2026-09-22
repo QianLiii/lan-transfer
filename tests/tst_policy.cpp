@@ -113,6 +113,17 @@ private slots:
         QCOMPARE(decide(*m_settings, *m_trust, peerWith(kOtherFingerprint)), Decision::Prompt);
     }
 
+    // 身份无效就拒。连接层保证了这一点，但那是隐式契约——这里显式拦一道，
+    // 免得将来多一条构造 PeerIdentity 的路径就把它变成「开放模式放行空身份」。
+    void invalidPeerIsRejected()
+    {
+        const net::PeerIdentity invalid; // 默认构造：指纹无效
+        QVERIFY(!invalid.isValid());
+
+        m_settings->setOpenMode(true); // 连最宽松的开关也不该放行
+        QCOMPARE(decide(*m_settings, *m_trust, invalid), Decision::Reject);
+    }
+
     // —————————————— 黑名单（§4）——————————————
 
     // 屏蔽优先于一切：连开放模式都不该把它放回来。
