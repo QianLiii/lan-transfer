@@ -87,6 +87,11 @@ private:
     // 丢掉等审批那一次的临时目录（没接受、超时、对端走了都走它）。
     void dropPendingSessionTempData();
 
+    // 把「等审批」的状态整个清掉：连接指针、会话 id（连带临时目录）、请求副本。
+    // 拒绝类路径（黑名单、限流）与连接断开都走它——只清一半的话 m_pendingApproval
+    // 还指着那条连接，后续 prepare 会拿到语义错误的 409「另一次传输正在等审批」。
+    void clearPendingRequest();
+
     // 会话存在、且属于这条连接的对端时返回它，否则回答并返回空。
     ReceiveSession *requireSession(http::HttpConnection &connection, const QString &sessionId);
 

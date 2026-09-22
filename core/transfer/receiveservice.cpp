@@ -228,10 +228,7 @@ void ReceiveService::handlePrepare(http::HttpConnection &connection)
     connect(&connection, &HttpConnection::finished, &connection, [this, &connection] {
         if (m_pendingApproval != &connection)
             return;
-        m_pendingApproval = nullptr;
-        m_approvalTimer->stop();
-        dropPendingSessionTempData();
-        m_pendingEntries.clear();
+        clearPendingRequest();
     });
 
     connection.readBody(proto::kMaxPrepareBodySize, [body](QByteArrayView chunk) {
@@ -325,8 +322,7 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
     const trust::Decision decision = trust::decide(m_settings, m_trust, peer);
     if (decision == trust::Decision::Reject) {
         // 黑名单：不回「等审批」，直接说清楚，用户不会再被它打扰。
-        dropPendingSessionTempData();
-        m_pendingEntries.clear();
+        clearPendingRequest();
         respondError(connection, Status::Forbidden,
                      QStringLiteral("这台设备已被屏蔽（%1）").arg(peer.deviceId.left(8)));
         return;
@@ -338,8 +334,7 @@ void ReceiveService::onPrepareBody(http::HttpConnection &connection, const QByte
 
     // 限流：提示疲劳是最短的攻击路径，问得太频繁就不再问，直接拒。
     if (!m_promptLimiter.allowPrompt(peer.deviceId)) {
-        dropPendingSessionTempData();
-        m_pendingEntries.clear();
+        clearPendingRequest();
         respondError(connection, Status::Forbidden,
                      QStringLiteral("这台设备请求过于频繁（%1）：稍后再试")
                          .arg(peer.deviceId.left(8)));
@@ -403,6 +398,16 @@ void ReceiveService::finishPrepare(http::HttpConnection &connection, bool accept
     }
 
     acceptRequest(connection);
+}
+
+void ReceiveService::clearPendingRequest()
+{
+    m_pendingApproval = nullptr;
+    m_approvalTimer->stop();
+    dropPendingSessionTempData();
+    m_pendingEntries.clear();
+    m_pendingRequest = {};
+    m_pendingPeer = {};
 }
 
 void ReceiveService::dropPendingSessionTempData()
